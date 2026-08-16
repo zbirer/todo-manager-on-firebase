@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Todo Manager</title>
+
+  <!-- Import Map for Firebase v11+ ESM -->
+  <script type="importmap">
+    {
+      "imports": {
+        "firebase/app": "https://www.gstatic.com/firebasejs/11.3.0/firebase-app.js",
+        "firebase/auth": "https://www.gstatic.com/firebasejs/11.3.0/firebase-auth.js",
+        "firebase/firestore": "https://www.gstatic.com/firebasejs/11.3.0/firebase-firestore.js"
+      }
+    }
+  </script>
+
+  <!-- Clean, modern styling -->
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 500px;
+      margin: 40px auto;
+      padding: 0 20px;
+      background-color: #f9fafb;
+      color: #1f2937;
+    }
+    h1 {
+      color: #111827;
+    }
+    button {
+      padding: 8px 16px;
+      border-radius: 6px;
+      border: none;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    button:hover {
+      opacity: 0.9;
+    }
+    #login-btn {
+      background-color: #4285f4;
+      color: white;
+    }
+    #logout-btn {
+      background-color: #ef4444;
+      color: white;
+    }
+    input {
+      width: 70%;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid #d1d5db;
+      font-size: 14px;
+    }
+    input:focus {
+      outline: 2px solid #3b82f6;
+      border-color: transparent;
+    }
+    #todo-form button {
+      background-color: #3b82f6;
+      color: white;
+    }
+    ul {
+      list-style: none;
+      padding: 0;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Todo Manager</h1>
+  
+  <div id="auth-section">
+    <p id="user-status">Checking status...</p>
+    <button id="login-btn" style="display: none;">Login with Google</button>
+    <button id="logout-btn" style="display: none;">Logout</button>
+  </div>
+
+  <!-- Interactive Todo UI section -->
+  <div id="todo-section" style="display: none; margin-top: 20px;">
+    <h2>My Tasks</h2>
+    <form id="todo-form">
+      <input 
+        type="text" 
+        id="todo-input" 
+        placeholder="Add task (e.g., Buy groceries #food @shop)" 
+        required 
+      />
+      <button type="submit">Add Todo</button>
+    </form>
+    <ul id="todo-list"></ul>
+  </div>
+
+  <!-- Pointing to our main orchestration file -->
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

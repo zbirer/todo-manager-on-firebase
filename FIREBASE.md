@@ -1,0 +1,271 @@
+# Firebase Configuration — `todo-manager`
+
+Technical reference for the Firebase project backing this repository: identifiers,
+service settings, how the client code uses them, and the gaps between what is
+configured in the console and what is checked into this repo.
+
+Last verified: 2026-08-16.
+
+---
+
+## 1. General project information
+
+| Field | Value |
+|---|---|
+| Display name | `todo-manager` |
+| Project ID | `todo-manager-1f96e` |
+| Project number | `378286017601` |
+| Preferred platform | Web (TypeScript / JavaScript) |
+| Default project (`.firebaserc`) | `todo-manager-1f96e` |
+
+The repo pins the project in [.firebaserc](.firebaserc), so `firebase deploy` needs
+no `--project` flag.
+
+## 2. Billing & subscription plan
+
+- **Plan:** Spark (no-cost).
+- **Consequence:** no Cloud Functions, no App Hosting / SSR, no outbound network
+  calls from Google-managed compute. Everything here must stay client-side static
+  hosting + Firestore + Auth. Moving to Blaze is required before adding any
+  server-side logic.
+
+## 3. Google Analytics
+
+| Field | Value |
+|---|---|
+| Property ID | `549966970` |
+| Property name | not configured |
+| Account ID | not configured |
+| Measurement ID (web app) | `G-26B170XMVV` |
+
+The measurement ID is present in the client config in
+[public/auth.js](public/auth.js), but `firebase/analytics` is **not** imported
+anywhere, so no analytics events are actually being sent. To enable, import
+`getAnalytics` and add the SDK URL to the import map in
+[public/index.html](public/index.html).
+
+## 4. Web app configuration
+
+The client config lives in [public/auth.js](public/auth.js):
+
+```js
+const firebaseConfig = {
+  apiKey: "AIzaSyAp059i2QlT0S3CawXY6urSBDOeIrjHu94",
+  authDomain: "todo-manager-1f96e.firebaseapp.com",
+  projectId: "todo-manager-1f96e",
+  storageBucket: "todo-manager-1f96e.firebasestorage.app",
+  messagingSenderId: "378286017601",
+  appId: "1:378286017601:web:154004d6a872bbcf4a8ac0",
+  measurementId: "G-26B170XMVV"
+};
+```
+
+**On the API key:** a Firebase web API key is a public identifier, not a secret —
+it is meant to ship in client bundles. It identifies the project; it does not
+authorize access. **Security Rules are the only access boundary** (see §6).
+Restricting the key by HTTP referrer in the Google Cloud console is still
+worthwhile as a quota-abuse measure.
+
+**Storage bucket** is configured but Cloud Storage is not used by any code in this
+repo and may not be provisioned.
+
+## 5. Authentication
+
+### General settings
+
+| Setting | Value |
+|---|---|
+| Multifactor authentication (MFA) | Disabled |
+| Allow duplicate emails | No |
+
+### Authorized domains
+
+OAuth redirects and auth flows are white-listed for:
+
+- `localhost`
+- `todo-manager-1f96e.firebaseapp.com`
+- `todo-manager-1f96e.web.app`
+
+Any custom domain added to Hosting later must also be added here, or sign-in will
+fail on it with `auth/unauthorized-domain`. Hosting **preview channels** get
+generated subdomains under `*.web.app` — verify sign-in works on a preview URL
+before relying on it for PR review.
+
+### Identity providers
+
+| Provider | State | Notes |
+|---|---|---|
+| Google | **Enabled** | OAuth client `378286017601-t07g788vj8v9qke1ihe1jdgtr3f389va.apps.googleusercontent.com`; no extra whitelisted client IDs |
+| Email / Password | Disabled | |
+| Phone | Disabled | |
+| Anonymous | Disabled | |
+
+Google is the only enabled provider, which matches the client: `logInWithGoogle()`
+in [public/auth.js](public/auth.js) uses `GoogleAuthProvider` + `signInWithPopup`,
+and [public/app.js](public/app.js) wires it to the single login button. There is no
+email/password UI to remove.
+
+Session state is observed through `monitorAuthState()` → `onAuthStateChanged`,
+which drives the whole UI: signed out hides the todo section, signed in reveals it
+and loads that user's tasks.
+
+## 6. Cloud Firestore
+
+| Field | Value |
+|---|---|
+| Database ID | `(default)` |
+| Type | `FIRESTORE_NATIVE` |
+| Location | `me-west1` (Tel Aviv, Israel) |
+
+The location is **permanent** — a Firestore location cannot be changed after
+creation; moving regions means a new database and a data migration.
+
+### Data model
+
+Written by [public/todoService.js](public/todoService.js). Tasks live in a
+per-user subcollection, which is what makes owner-scoped rules simple:
+
+```
+users/{userId}/todos/{todoId}
+```
+
+Each todo document:
+
+| Field | Type | Notes |
+|---|---|---|
+| `title` | string | Raw input text, tags included |
+| `completed` | bool | Always written `false`; no toggle in the UI yet |
+| `parentTaskId` | string \| null | Reserved for task hierarchy; nothing sets it yet |
+| `tags` | string[] | Parsed from the title by `/([#@]\w+)/g` — `#food`, `@shop` |
+| `colors.foreground` | string | Hex; app.js currently sends `#ffffff` |
+| `colors.background` | string | Hex; app.js currently sends `#10b981` |
+| `createdAt` | timestamp | `serverTimestamp()` |
+| `dueDate` | timestamp \| null | Accepted by `addTodo`, not yet supplied by the UI |
+
+Reads use `query(..., orderBy("createdAt", "desc"))` — a single-field sort, served
+by the automatic index. That is why [firestore.indexes.json](firestore.indexes.json)
+is empty and correct. A composite index becomes necessary the moment a `where()`
+filter (e.g. `completed == false`, or `array-contains` on `tags`) is combined with
+that sort.
+
+### Security rules — three-way mismatch, action required
+
+There are three different states in play, and none of them agree:
+
+1. **Deployed in the console:** deny all reads and writes.
+
+   ```
+   allow read, write: if false;
+   ```
+
+2. **Checked into this repo** ([firestore.rules](firestore.rules)): fully open
+   until 2026-09-15 — the CLI's default test-mode rule, which lets *anyone*
+   read and delete the whole database, and then locks it out entirely on expiry.
+
+3. **What the app needs:** each signed-in user reading and writing only their own
+   `users/{uid}/todos` subtree.
+
+Against the deployed deny-all rules, **the app cannot work** — `fetchUserTodos`
+and `addTodo` both fail with `permission-denied`. The repo copy is not a safe
+alternative: it is world-writable, and it expires.
+
+The rules that match the actual data model:
+
+```
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId}/todos/{todoId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}
+```
+
+Also note [firestore.rules](firestore.rules) opens with `rules_version='2'` with
+no trailing semicolon; use `rules_version = '2';`.
+
+## 7. Hosting
+
+Configured in [firebase.json](firebase.json):
+
+| Setting | Value |
+|---|---|
+| Public directory | `public/` |
+| Ignored | `firebase.json`, dotfiles, `node_modules/**` |
+| Rewrites | `**` → `/index.html` (SPA fallback) |
+| Live URLs | `todo-manager-1f96e.web.app`, `todo-manager-1f96e.firebaseapp.com` |
+
+The app is plain ES modules with no build step: [public/index.html](public/index.html)
+declares an **import map** pointing `firebase/app`, `firebase/auth` and
+`firebase/firestore` at the Firebase JS SDK **v11.3.0** on `gstatic.com`. Adding a
+new Firebase product means adding its URL to that import map, not just importing it.
+
+**`firebase.json` has no `firestore` block.** Because of that, `firebase deploy`
+deploys hosting only — `firestore.rules` and `firestore.indexes.json` are inert.
+To make them deployable:
+
+```json
+"firestore": {
+  "rules": "firestore.rules",
+  "indexes": "firestore.indexes.json"
+}
+```
+
+## 8. CI / CD — GitHub Actions
+
+Two auto-generated workflows in `.github/workflows/`:
+
+| Workflow | Trigger | Result |
+|---|---|---|
+| [firebase-hosting-merge.yml](.github/workflows/firebase-hosting-merge.yml) | push to `main` | deploy to the `live` channel |
+| [firebase-hosting-pull-request.yml](.github/workflows/firebase-hosting-pull-request.yml) | `pull_request` (same-repo only) | deploy a preview channel, comment the URL on the PR |
+
+Both authenticate with the repository secret
+`FIREBASE_SERVICE_ACCOUNT_TODO_MANAGER_1F96E` and target project
+`todo-manager-1f96e`.
+
+**Both will currently fail:** each runs `npm ci && npm run build`, and this repo has
+no `package.json` and no build step. Either drop that line (correct for the current
+no-build, import-map setup) or add a `package.json`.
+
+## 9. Local development
+
+```bash
+firebase login
+firebase serve --only hosting
+```
+
+`localhost` is already an authorized domain, so Google sign-in works locally
+against the real project. Note that this means local development reads and writes
+**production** Firestore data. The Firebase Emulator Suite
+(`firebase init emulators`, then `firebase emulators:start`) gives isolated Auth +
+Firestore and lets rules be tested before deploy — worth adding.
+
+## 10. Deploy commands
+
+```bash
+firebase deploy --only hosting
+```
+
+```bash
+firebase deploy --only firestore:rules
+```
+
+The rules command only works once the `firestore` block from §7 is added to
+`firebase.json`.
+
+## 11. Open items
+
+1. **Rules mismatch (blocking).** Deployed rules deny everything; the app is
+   non-functional against them. Deploy owner-scoped rules (§6).
+2. **`firebase.json` cannot deploy Firestore config.** Add the `firestore` block.
+3. **CI is broken.** Remove `npm ci && npm run build` or add a `package.json`.
+4. **Analytics configured but not wired.** Decide: use it or drop `measurementId`.
+5. **Stray files in `public/`** — `app (Copy).js`, `index (Copy).html`, `__index.js`,
+   `new 106`. Everything under `public/` is deployed and publicly served, so these
+   ship to production as-is. Delete them or move them out of `public/`.
+6. **No emulator config**, so all local work hits production data.
+7. **Unused document fields** (`parentTaskId`, `dueDate`, `completed` toggle) — the
+   schema anticipates hierarchy, due dates and completion, but no UI reaches them.

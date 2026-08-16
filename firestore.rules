@@ -1,18 +1,67 @@
-rules_version='2'
+rules_version = '2';
+
+// Access control for the Todo Manager database.
+//
+// This app is static files with no server of its own, so there is no place to
+// check a request before it reaches the database. These rules are that check —
+// they are the only thing standing between the data and anyone on the internet
+// who takes the (publicly visible) API key out of the client code.
+//
+// The whole model rests on one fact: every piece of a user's data lives under
+// /users/{their uid}. Comparing the signed-in uid to that path segment is
+// therefore enough to keep users out of each other's data, everywhere at once.
+//
+// Deliberately NOT included: a catch-all `match /users/{userId}/{document=**}`.
+// Rules are a union — if any matching rule allows a write, it is allowed — so a
+// catch-all would silently override every validation below. The cost is that a
+// new collection added later needs its own match block here, or it is denied.
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
-      // This rule allows anyone with your database reference to view, edit,
-      // and delete all data in your database. It is useful for getting
-      // started, but it is configured to expire after 30 days because it
-      // leaves your app open to attackers. At that time, all client
-      // requests to your database will be denied.
-      //
-      // Make sure to write security rules for your app before that time, or
-      // else all client requests to your database will be denied until you
-      // update your rules.
-      allow read, write: if request.time < timestamp.date(2026, 9, 15);
+
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
+
+    // Tasks: one flat collection per user. Hierarchy lives in parentId /
+    // ancestors rather than in nested subcollections, so a single match covers
+    // every task at every depth.
+    match /users/{userId}/tasks/{taskId} {
+      allow read, delete: if isOwner(userId);
+      allow create, update: if isOwner(userId) && isValidTask();
+    }
+
+    // Settings: tag definitions (color + matrix quadrant) and week start day.
+    match /users/{userId}/meta/{docId} {
+      allow read, delete: if isOwner(userId);
+      allow create, update: if isOwner(userId) && isValidSettings();
+    }
+
+    // A task must be a task. These checks catch a corrupted or truncated write
+    // reaching the database, and cap the fields a user could otherwise grow
+    // without limit — an authenticated user can only ever bloat their own data,
+    // but there is no reason to let them.
+    function isValidTask() {
+      let d = request.resource.data;
+      return d.title is string
+          && d.title.size() > 0
+          && d.title.size() <= 1000
+          && d.completed is bool
+          && d.deleted is bool
+          && d.pinned is bool
+          && d.inInbox is bool
+          && (!('note' in d) || d.note == null ||
+              (d.note is string && d.note.size() <= 10000))
+          && (!('parentId' in d) || d.parentId == null || d.parentId is string)
+          // Depth is capped at 7 levels, so a task has at most 6 ancestors.
+          && (!('ancestors' in d) || (d.ancestors is list && d.ancestors.size() <= 6))
+          && (!('tags' in d) || (d.tags is list && d.tags.size() <= 50));
+    }
+
+    function isValidSettings() {
+      let d = request.resource.data;
+      return (!('weekStart' in d) || d.weekStart in ['sunday', 'monday'])
+          && (!('tags' in d) || (d.tags is map && d.tags.keys().size() <= 500));
     }
   }
 }

@@ -35,7 +35,7 @@ const provider = new GoogleAuthProvider();
 export const logInWithGoogle = async () => {
   try {
     const result = await signInWithPopup(auth, provider);
-    console.log("Successfully logged in with user:", result.user.displayName);
+    console.log("Successfully logged in:", result.user.displayName);
     console.log("Logged in user UID:", result.user.uid); // <-- This line prints your UID!
     return result.user;
   } catch (error) {
@@ -43,6 +43,7 @@ export const logInWithGoogle = async () => {
     throw error;
   }
 };
+
 
 // 2. Function to log out
 export const logOut = async () => {

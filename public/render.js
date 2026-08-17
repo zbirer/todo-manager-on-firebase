@@ -280,11 +280,20 @@ function createTaskElement(taskId) {
     deleteButton,
     editingTitle: false,
     editingNote: false,
+    // Last task data this row was rendered from. Kept up to date on every
+    // update — including updates that skip the DOM writes below because an
+    // edit is open — so the edit-close functions have something current to
+    // resync the visible text from. Without it, a save that lands while its
+    // own edit box is still open would leave the pre-edit text on screen
+    // (see endTitleEdit).
+    task: null,
   };
 }
 
 function updateTaskElement(entry, task, depth) {
   const { li, checkbox, label, titleInput, noteDisplay, noteInput, moveOutButton } = entry;
+
+  entry.task = task;
 
   li.className = "task-item" + (task.completed ? " task-item--completed" : "");
   // Per-task color still comes from stored data (step 14 replaces this with
@@ -342,10 +351,29 @@ export function beginTitleEdit(taskId) {
   entry.titleInput.select();
 }
 
+// Closing an edit must resync the text it is about to reveal. While
+// `editingTitle` was true, updateTaskElement deliberately skipped writing
+// `label.textContent` so a refresh couldn't clobber what the user was
+// typing — which means the label still holds the title as it was when the
+// edit opened. app.js commits a title by awaiting the write AND the
+// refetch/re-render, and only then calls this; that re-render is exactly one
+// of the passes the guard skipped, so without the resync below the row would
+// reveal the pre-edit title after a perfectly successful save and look as
+// though the edit had been silently discarded.
+//
+// `entry.task` is the row's last rendered task (updateTaskElement keeps it
+// current even on the passes it skips), so it is the saved value in every
+// case this runs: a committed edit, an Escape cancel, and a failed write
+// that already reverted the input — all three want the last-known-saved
+// title back on screen.
 export function endTitleEdit(taskId) {
   const entry = entriesByTaskId.get(taskId);
   if (!entry) return;
   entry.editingTitle = false;
+  if (entry.task) {
+    entry.label.textContent = entry.task.title;
+    entry.titleInput.value = entry.task.title;
+  }
   entry.titleInput.style.display = "none";
   entry.label.style.display = "";
 }
@@ -373,10 +401,17 @@ export function beginNoteEdit(taskId) {
   entry.noteInput.focus();
 }
 
+// Same resync as endTitleEdit above, for the same reason — the note display
+// was skipped by updateTaskElement for as long as its edit was open, so it
+// still holds the pre-edit note until this rebuilds it.
 export function endNoteEdit(taskId) {
   const entry = entriesByTaskId.get(taskId);
   if (!entry) return;
   entry.editingNote = false;
+  if (entry.task) {
+    renderNoteInto(entry.noteDisplay, entry.task.note || "");
+    entry.noteInput.value = entry.task.note || "";
+  }
   entry.noteInput.style.display = "none";
   entry.noteDisplay.style.display = "";
 }

@@ -1079,6 +1079,18 @@ driving the real modules directly):**
     since nothing else can mutate these tasks mid-loop (the queue serializes
     against every other enqueued mutation). Fixed to match; the loop's own
     comment no longer claims an exactness to step 8 it didn't have.
+- **steps 11–12 review round (issue 6)** — `computeSubtreeHeight`,
+  `canReparent`, and `rewriteDescendantAncestors` moved from `app.js` into
+  `taskTree.js`. They are pure tree math (no DOM, no Firestore, no store
+  access) composed directly over `buildTree`/`descendantIds`/`depthOf`/
+  `ancestorChain` — exactly the kind of logic `app.js`'s own file header says
+  does not belong there ("No task/tree logic lives here — that's
+  taskTree.js"). `canReparent` reading task fields off `tree.byId` stays
+  pure: `tree` is buildTree's own pure output, not a live reference. All
+  three stay exported (a browser harness calls them directly for
+  verification, same precedent as `computeReorderOrder`/
+  `selectPurgeCandidates` staying in `app.js`); `app.js` now imports them
+  from `taskTree.js` instead of defining them.
 
 ## Open items (not steps)
 

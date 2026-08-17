@@ -6,7 +6,17 @@
 
 import { logInWithGoogle, logOut, monitorAuthState } from "./auth.js";
 import { addTask, fetchTasks, saveTask, softDeleteTask, purgeTask } from "./taskService.js";
-import { buildTree, depthOf, descendantIds, ancestorChain } from "./taskTree.js";
+import {
+  buildTree,
+  depthOf,
+  descendantIds,
+  ancestorChain,
+  // Step 11's pure reparent math, moved here from app.js (issue 6): no
+  // DOM/Firestore, so it belongs alongside buildTree/descendantIds/depthOf.
+  computeSubtreeHeight,
+  canReparent,
+  rewriteDescendantAncestors,
+} from "./taskTree.js";
 import {
   getTasks,
   setTasks,
@@ -1295,76 +1305,13 @@ function beginDrag(taskId, event, handleEl) {
   }
 }
 
-// Step 11 (D4): the height of `taskId`'s own subtree — 0 for a leaf, else how
-// many levels its deepest live-or-deleted descendant sits below it. `tree`
-// must be built from the FULL task set (deleted included) — see the `drag`
-// doc comment above beginDrag for why a deleted descendant still counts
-// toward the cap. Pure and side-effect-free, exported for direct
-// verification (same precedent as computeReorderOrder/selectPurgeCandidates
-// above) since it's the one piece of D4's math neither the drag's live check
-// nor performReparent's write-time re-check can skip.
-export function computeSubtreeHeight(tree, taskId) {
-  const ids = descendantIds(tree, taskId);
-  if (ids.length === 0) return 0;
-  const draggedDepth = depthOf(tree, taskId);
-  return Math.max(...ids.map((id) => depthOf(tree, id))) - draggedDepth;
-}
-
-// Step 11 (D3): the four refusals that keep a reparent drop from ever
-// "appearing to work and then snapping back" — the same rule step 10 already
-// applies to an invalid sibling target. `subtreeHeight` is
-// `computeSubtreeHeight(tree, draggedId)`, passed in rather than recomputed
-// here since both the drag's live check and performReparent's write-time
-// re-check already have it in hand. Pure (only reads `tree`), exported for
-// direct verification for the same reason as computeSubtreeHeight above —
-// both the live drag-hover check (via isValidReparentTarget below) and
-// performReparent's write-time re-check route through this one function, so
-// there is exactly one place the four refusal rules live.
-export function canReparent(tree, draggedId, newParentId, subtreeHeight) {
-  if (newParentId === draggedId) return false; // defensive: can't parent onto itself
-  const draggedTask = tree.byId.get(draggedId);
-  if (!draggedTask) return false;
-  if (descendantIds(tree, draggedId).includes(newParentId)) return false; // D3: would cut the tree into a cycle
-  if (draggedTask.parentId === newParentId) return false; // D3: no-op — already the parent
-  const newParentTask = tree.byId.get(newParentId);
-  if (!newParentTask || newParentTask.deleted) return false; // defensive: not a renderable row
-  if (depthOf(tree, newParentId) + 1 + subtreeHeight > 6) return false; // D4
-  return true;
-}
-
-// Live-drag wrapper around canReparent: `drag.tree`/`subtreeHeight` are the
-// beginDrag-time snapshot (see the `drag` doc comment for why recomputing
-// per-move isn't needed). `hoveredId === drag.taskId` is deliberately NOT
-// re-checked here — updateDragTarget's caller already returns before this is
-// ever reached for that case.
+// Live-drag wrapper around canReparent (taskTree.js): `drag.tree`/
+// `subtreeHeight` are the beginDrag-time snapshot (see the `drag` doc
+// comment for why recomputing per-move isn't needed). `hoveredId ===
+// drag.taskId` is deliberately NOT re-checked here — updateDragTarget's
+// caller already returns before this is ever reached for that case.
 function isValidReparentTarget(hoveredId) {
   return canReparent(drag.tree, drag.taskId, hoveredId, drag.subtreeHeight);
-}
-
-// Step 11 (D5), rewritten for issue 4: the ancestors a DESCENDANT of the
-// moved task gets after the move. The tail (this descendant's own nesting
-// below the dragged task) now comes from walking `tree` via `ancestorChain`
-// — NOT from slicing the descendant's own cached `ancestors` field, which was
-// this function's original (buggy) shape. `tree` must be the pre-write
-// snapshot (`performReparent`'s `freshTree`): a reparent never changes any
-// DESCENDANT's `parentId`, only the dragged task's own, so `tree` still
-// reflects the true, current parent/child shape for every descendant even
-// though the dragged task's write may already have landed by the time a
-// later descendant's turn comes up. Deriving the tail from `parentId` (via
-// the tree) rather than from the cached field is exactly what makes this
-// robust to a descendant's `ancestors` having drifted stale or corrupt: a
-// partial write failure earlier can never propagate into this computation,
-// because this computation never reads the field it would have corrupted.
-// `newDraggedAncestors` is the dragged task's own new `ancestors` (root-first,
-// not including itself); this returns the descendant's full new chain,
-// dragged task included. Pure, exported for direct verification (11d, and
-// the corrupted-cache proof issue 4 requires) — the one place this rewrite
-// math lives, called from performReparent for the real write.
-export function rewriteDescendantAncestors(tree, newDraggedAncestors, draggedId, descendantId) {
-  const descendantChain = ancestorChain(tree, descendantId); // root-first, not including descendantId
-  const draggedIndex = descendantChain.indexOf(draggedId);
-  const tail = draggedIndex === -1 ? [] : descendantChain.slice(draggedIndex + 1);
-  return [...newDraggedAncestors, draggedId, ...tail];
 }
 
 // Re-evaluates the drop target on every pointermove. `document.elementFromPoint`

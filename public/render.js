@@ -36,10 +36,25 @@
 // Map, so a task id always maps to exactly one <li> in exactly one
 // container's DOM, and moving a task between containers (filing it out of
 // the Inbox) reuses that same <li> rather than destroying and recreating it.
+//
+// Step 12 (Focus/pin, D1/D2/D4): Focus is a third container rendered inside
+// the SAME `renderTasks` call (never a second call — see the containers-doc
+// comment below for why a second call to the shared-map version would
+// corrupt it), but it deliberately does NOT share `entriesByTaskId` with
+// Inbox/main. A pinned task renders BOTH in Focus AND in its normal place at
+// once (D4) — a real second <li> for one task id, which the one-id-one-<li>
+// invariant above cannot support. Exactly like step 9's Trash
+// (`trashEntriesByTaskId` below), Focus gets its own separate Map, so its own
+// cleanup pass can never delete — or be broken by — an entry the main pass
+// still needs. Focus is also flat (D2: a hand-picked set, not a subtree), so
+// it skips flattenTree/buildTree entirely and just sorts with the exact same
+// sibling comparator (`sortTasks`) the main list uses (D3), rendering every
+// row at depth 0 — Focus carries no indentation, it isn't a view of the tree.
 
 import { buildTree, depthOf } from "./taskTree.js";
 
 const entriesByTaskId = new Map();
+const focusEntriesByTaskId = new Map();
 
 // The sibling comparator — orders tasks that share the same parent. This is
 // the exact seam step 16 replaces with the quadrant-first comparator. It
@@ -87,31 +102,46 @@ function flattenTree(allTasks, visibleIds) {
 }
 
 // `containers` is an array of `{ element, tasks, visibleIds }` — one entry
-// per rendered section (step 5 adds the Inbox alongside the main list; a
-// future Focus/Trash section would be a third). `onEditCancelled` is called
-// once for every open edit (title and/or note) that gets silently dropped
-// below, in case anything is left with a dangling `beginInteraction()`.
-// render.js must not import store.js — the interaction guard is app.js's
-// concern — so this is a callback rather than a direct call, per the module
-// ownership boundary.
+// per rendered TREE section (step 5 adds the Inbox alongside the main list).
+// `focusContainer` is `{ element, tasks }` (or `null`) for the Focus section
+// (step 12) — a separate parameter, not a third array entry, because it is
+// FLAT (D2) and lives in its own Map (see the file-header comment above for
+// why), not because it renders in a second call: this is still the one
+// single `renderTasks` invocation both sections' data flows through.
+// `onEditCancelled` is called once for every open edit (title and/or note)
+// that gets silently dropped below, in case anything is left with a dangling
+// `beginInteraction()`; its second argument is `"title"`/`"note"` for a
+// tree-container entry or `"title:focus"`/`"note:focus"` for a Focus entry,
+// so a caller tracking open edits by task+field can tell the two apart (a
+// pinned task can theoretically have both its main-list row AND its Focus
+// row open for edit at once — they are two independent DOM nodes with two
+// independent edit states). render.js must not import store.js — the
+// interaction guard is app.js's concern — so this is a callback rather than
+// a direct call, per the module ownership boundary.
 //
-// All containers share ONE `entriesByTaskId` Map and go through ONE
+// All TREE containers share ONE `entriesByTaskId` Map and go through ONE
 // seen/cleanup pass before any DOM is touched. That matters: a task id must
-// map to exactly one <li>, and Inbox vs. main are a strict partition (a
-// subtask always inherits its parent's `inInbox`, so no task's ancestry ever
-// crosses between the two) — but if this ran as two independent calls to a
-// single-container version of this function, the FIRST call's cleanup would
-// delete every entry the SECOND call still needs (they're simply not in the
-// first call's own seen set), destroying and rebuilding half the list on
-// every render. Computing the union of "seen" across every container first,
-// then reconciling each container's DOM separately, is what avoids that.
-export function renderTasks(containers, onEditCancelled) {
+// map to exactly one <li> among the tree containers, and Inbox vs. main are a
+// strict partition (a subtask always inherits its parent's `inInbox`, so no
+// task's ancestry ever crosses between the two) — but if this ran as two
+// independent calls to a single-container version of this function, the
+// FIRST call's cleanup would delete every entry the SECOND call still needs
+// (they're simply not in the first call's own seen set), destroying and
+// rebuilding half the list on every render. Computing the union of "seen"
+// across every tree container first, then reconciling each container's DOM
+// separately, is what avoids that. Focus runs the identical seen/cleanup
+// discipline against its own separate Map and its own separate seen set, so
+// neither pass can ever see (or corrupt) the other's entries.
+export function renderTasks(containers, focusContainer, onEditCancelled) {
   const seenIds = new Set();
   const perContainer = containers.map(({ element, tasks, visibleIds }) => {
     const flattened = flattenTree(tasks, visibleIds);
     for (const { task } of flattened) seenIds.add(task.id);
     return { element, flattened };
   });
+
+  const focusTasks = focusContainer ? sortTasks(focusContainer.tasks) : [];
+  const focusSeenIds = new Set(focusTasks.map((task) => task.id));
 
   for (const { flattened } of perContainer) {
     for (const { task, depth } of flattened) {
@@ -124,7 +154,20 @@ export function renderTasks(containers, onEditCancelled) {
     }
   }
 
-  // Drop entries for tasks that left every rendered container this pass
+  // Focus is flat (D2) — no tree, no depth. Every row renders at depth 0,
+  // built/updated with the exact same createTaskElement/updateTaskElement
+  // pair the tree containers use (D1: full per-row behavior inherited), just
+  // keyed into the separate `focusEntriesByTaskId` Map instead.
+  for (const task of focusTasks) {
+    let entry = focusEntriesByTaskId.get(task.id);
+    if (!entry) {
+      entry = createTaskElement(task.id);
+      focusEntriesByTaskId.set(task.id, entry);
+    }
+    updateTaskElement(entry, task, 0);
+  }
+
+  // Drop entries for tasks that left every rendered tree container this pass
   // (deleted, filtered out by "show completed", a sign-out clearing the
   // store, etc.) so the Map doesn't grow forever. A dropped entry can be
   // mid-edit — its own `focusout` never fires because the element is about
@@ -143,13 +186,33 @@ export function renderTasks(containers, onEditCancelled) {
     }
   }
 
+  // Same cleanup, own Map, own seen set — an unpin, a completion (which
+  // always clears `pinned`, D5), or a delete removes a task from
+  // `focusTasks` without touching the tree containers' pass above at all.
+  for (const id of focusEntriesByTaskId.keys()) {
+    if (!focusSeenIds.has(id)) {
+      const entry = focusEntriesByTaskId.get(id);
+      if (onEditCancelled) {
+        if (entry.editingTitle) onEditCancelled(id, "title:focus");
+        if (entry.editingNote) onEditCancelled(id, "note:focus");
+      }
+      focusEntriesByTaskId.delete(id);
+    }
+  }
+
   // A task moving between containers (filed out of the Inbox) simply shows
   // up in a different container's `flattened` list on the next render;
   // reconcileChildren's insertBefore relocates its <li> there directly
   // (insertBefore natively reparents across different parents, not just
-  // within one), so a task id is never a child of two containers at once.
+  // within one), so a task id is never a child of two TREE containers at
+  // once. Focus's <li> is a wholly separate node in its own Map, so a task
+  // being reconciled into Focus here never competes with its own
+  // reconciliation into the main list/Inbox above.
   for (const { element, flattened } of perContainer) {
     reconcileChildren(element, flattened.map(({ task }) => entriesByTaskId.get(task.id).li));
+  }
+  if (focusContainer) {
+    reconcileChildren(focusContainer.element, focusTasks.map((task) => focusEntriesByTaskId.get(task.id).li));
   }
 }
 
@@ -357,9 +420,19 @@ function updateTaskElement(entry, task, depth) {
 // --- Title edit mode -------------------------------------------------------
 // app.js decides *when* to call these (a delegated click to begin, a
 // delegated focusout to end); this module only knows *how* to swap the DOM.
+//
+// Step 12: each of these is now a thin wrapper around a `*In(map, taskId)`
+// helper parameterized on which Map to look the entry up in. A pinned task
+// has an entry in BOTH `entriesByTaskId` (its normal-place <li>) and
+// `focusEntriesByTaskId` (its Focus <li>) — two independent DOM nodes with
+// two independent `editingTitle`/`editingNote` flags — so app.js needs a way
+// to address specifically the row the user actually clicked, not "whichever
+// entry this taskId happens to resolve to". The exported `*Focus` variants
+// exist for exactly that; there is no third, taskId-only entry point that
+// could pick the wrong one.
 
-export function beginTitleEdit(taskId) {
-  const entry = entriesByTaskId.get(taskId);
+function beginTitleEditIn(map, taskId) {
+  const entry = map.get(taskId);
   if (!entry) return;
   entry.editingTitle = true;
   entry.label.style.display = "none";
@@ -383,8 +456,8 @@ export function beginTitleEdit(taskId) {
 // case this runs: a committed edit, an Escape cancel, and a failed write
 // that already reverted the input — all three want the last-known-saved
 // title back on screen.
-export function endTitleEdit(taskId) {
-  const entry = entriesByTaskId.get(taskId);
+function endTitleEditIn(map, taskId) {
+  const entry = map.get(taskId);
   if (!entry) return;
   entry.editingTitle = false;
   if (entry.task) {
@@ -395,22 +468,52 @@ export function endTitleEdit(taskId) {
   entry.label.style.display = "";
 }
 
-export function getTitleInputValue(taskId) {
-  return entriesByTaskId.get(taskId)?.titleInput.value ?? "";
+function getTitleInputValueIn(map, taskId) {
+  return map.get(taskId)?.titleInput.value ?? "";
 }
 
 // Used to revert the input back to the last-saved title after a failed
 // write, so a dismissed error doesn't leave stale unsaved text sitting in
 // a box that already silently closed.
-export function setTitleInputValue(taskId, value) {
-  const entry = entriesByTaskId.get(taskId);
+function setTitleInputValueIn(map, taskId, value) {
+  const entry = map.get(taskId);
   if (entry) entry.titleInput.value = value;
 }
 
-// --- Note edit mode ---------------------------------------------------------
+export function beginTitleEdit(taskId) {
+  beginTitleEditIn(entriesByTaskId, taskId);
+}
+export function endTitleEdit(taskId) {
+  endTitleEditIn(entriesByTaskId, taskId);
+}
+export function getTitleInputValue(taskId) {
+  return getTitleInputValueIn(entriesByTaskId, taskId);
+}
+export function setTitleInputValue(taskId, value) {
+  setTitleInputValueIn(entriesByTaskId, taskId, value);
+}
 
-export function beginNoteEdit(taskId) {
-  const entry = entriesByTaskId.get(taskId);
+// Step 12: identical behavior, addressed at the Focus row's own entry.
+export function beginTitleEditFocus(taskId) {
+  beginTitleEditIn(focusEntriesByTaskId, taskId);
+}
+export function endTitleEditFocus(taskId) {
+  endTitleEditIn(focusEntriesByTaskId, taskId);
+}
+export function getTitleInputValueFocus(taskId) {
+  return getTitleInputValueIn(focusEntriesByTaskId, taskId);
+}
+export function setTitleInputValueFocus(taskId, value) {
+  setTitleInputValueIn(focusEntriesByTaskId, taskId, value);
+}
+
+// --- Note edit mode ---------------------------------------------------------
+// Same map-parameterized-helper / thin-wrapper shape as the title functions
+// above, for the identical reason (a pinned task's Focus row and normal-place
+// row are two independent <li>s with two independent note-edit states).
+
+function beginNoteEditIn(map, taskId) {
+  const entry = map.get(taskId);
   if (!entry) return;
   entry.editingNote = true;
   entry.noteDisplay.style.display = "none";
@@ -421,8 +524,8 @@ export function beginNoteEdit(taskId) {
 // Same resync as endTitleEdit above, for the same reason — the note display
 // was skipped by updateTaskElement for as long as its edit was open, so it
 // still holds the pre-edit note until this rebuilds it.
-export function endNoteEdit(taskId) {
-  const entry = entriesByTaskId.get(taskId);
+function endNoteEditIn(map, taskId) {
+  const entry = map.get(taskId);
   if (!entry) return;
   entry.editingNote = false;
   if (entry.task) {
@@ -433,13 +536,40 @@ export function endNoteEdit(taskId) {
   entry.noteDisplay.style.display = "";
 }
 
-export function getNoteInputValue(taskId) {
-  return entriesByTaskId.get(taskId)?.noteInput.value ?? "";
+function getNoteInputValueIn(map, taskId) {
+  return map.get(taskId)?.noteInput.value ?? "";
 }
 
-export function setNoteInputValue(taskId, value) {
-  const entry = entriesByTaskId.get(taskId);
+function setNoteInputValueIn(map, taskId, value) {
+  const entry = map.get(taskId);
   if (entry) entry.noteInput.value = value;
+}
+
+export function beginNoteEdit(taskId) {
+  beginNoteEditIn(entriesByTaskId, taskId);
+}
+export function endNoteEdit(taskId) {
+  endNoteEditIn(entriesByTaskId, taskId);
+}
+export function getNoteInputValue(taskId) {
+  return getNoteInputValueIn(entriesByTaskId, taskId);
+}
+export function setNoteInputValue(taskId, value) {
+  setNoteInputValueIn(entriesByTaskId, taskId, value);
+}
+
+// Step 12: identical behavior, addressed at the Focus row's own entry.
+export function beginNoteEditFocus(taskId) {
+  beginNoteEditIn(focusEntriesByTaskId, taskId);
+}
+export function endNoteEditFocus(taskId) {
+  endNoteEditIn(focusEntriesByTaskId, taskId);
+}
+export function getNoteInputValueFocus(taskId) {
+  return getNoteInputValueIn(focusEntriesByTaskId, taskId);
+}
+export function setNoteInputValueFocus(taskId, value) {
+  setNoteInputValueIn(focusEntriesByTaskId, taskId, value);
 }
 
 // --- Note rendering ---------------------------------------------------------

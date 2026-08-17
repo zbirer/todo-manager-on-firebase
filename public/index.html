@@ -173,6 +173,22 @@
       border-bottom: 1px solid #d1d5db;
       margin-bottom: 8px;
     }
+    /* Step 12: Focus — pinned tasks, flat (render.js's renderTasks flat
+       branch), sitting above Inbox/main (D8: it's the "what am I working on
+       now" view). `hidden` (toggled by app.js's renderMainView) means no
+       empty heading takes up space when nothing is pinned. Rows reuse the
+       exact same .task-item markup/styling as the main list — a pinned row
+       looks identical whether you're looking at its Focus copy or its
+       normal-place copy. */
+    #focus-section h2 {
+      font-size: 16px;
+      margin-bottom: 4px;
+    }
+    #focus-section {
+      padding-bottom: 8px;
+      border-bottom: 1px solid #d1d5db;
+      margin-bottom: 8px;
+    }
     /* Step 8: the task context menu — one element for the whole app, moved
        and re-labeled per open rather than rebuilt. It lives outside both
        <ul>s (it's a sibling of #task-section entirely) so render.js's keyed
@@ -335,6 +351,17 @@
       </label>
       <button type="button" id="trash-btn">Trash</button>
 
+      <!-- Step 12 (D1/D8): Focus — pinned tasks, hand-picked (D2: flat, no
+           subtree pulled in), sorted by the same comparator as the main list
+           (D3). `hidden` by default; app.js's renderMainView toggles it based
+           on whether anything is pinned, so an empty Focus never shows an
+           empty heading above the Inbox. Sits ABOVE the Inbox — it's the
+           "what am I working on right now" view, per the spec. -->
+      <section id="focus-section" hidden>
+        <h2>Focus</h2>
+        <ul id="focus-list"></ul>
+      </section>
+
       <!-- Step 5: a real container, not a computed view — a task sits here
            until an explicit move files it into the list below. Shown first
            since every new capture lands here by default (product-spec.md's
@@ -381,6 +408,14 @@
          through the exact same reparent handler the drag-drop path uses
          (performReparent in app.js), not a parallel implementation. -->
     <button type="button" class="task-menu__item" data-action="move-to-top">Move to top level</button>
+    <!-- Step 12 (D7): pin/unpin a task into Focus — context-menu only, no
+         inline per-row button, same pattern as "Move to top level" above.
+         Label text and hidden/shown state are set per-open by app.js's
+         openTaskMenuForTask (hidden for a completed task — only an open task
+         can be "what I'm working on now"). Routes through the one shared
+         handleTogglePinClick/enqueueMutation-wrapped saveTask, not a
+         parallel implementation. -->
+    <button type="button" class="task-menu__item" data-action="toggle-pin">Pin to Focus</button>
     <button type="button" class="task-menu__item task-menu__item--danger" data-action="delete">Delete</button>
   </div>
 

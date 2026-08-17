@@ -31,6 +31,18 @@ import {
   endNoteEdit,
   getNoteInputValue,
   setNoteInputValue,
+  // Step 12 (D1/D4): a pinned task renders in Focus AND in its normal place
+  // at once — two independent <li>s, two independent edit states — so the
+  // Focus row's own edit-mode functions are separate exports, not a second
+  // set of arguments on the ones above. See render.js's own comment on these.
+  beginTitleEditFocus,
+  endTitleEditFocus,
+  getTitleInputValueFocus,
+  setTitleInputValueFocus,
+  beginNoteEditFocus,
+  endNoteEditFocus,
+  getNoteInputValueFocus,
+  setNoteInputValueFocus,
 } from "./render.js";
 
 // Mirrors firestore.rules' isValidTask() caps. Checked here, client-side,
@@ -66,7 +78,14 @@ function parseTags(title) {
 }
 
 // Tracks which edits currently hold an open interaction, keyed by
-// `${taskId}:${field}`. Two independent paths can each try to close the
+// `${taskId}:${field}`, where `field` is `"title"`/`"note"` for an edit on a
+// task's normal-place row or `"title:focus"`/`"note:focus"` for an edit on
+// its Focus row (step 12, D1/D4: a pinned task has two independent <li>s and
+// two independent edit states, so they need two independent keys here too —
+// without the `:focus` suffix, opening an edit on one row and closing it via
+// the OTHER row's path would double-decrement this same task+field's
+// interaction, exactly the class of bug the rest of this comment describes).
+// Two independent paths can each try to close the
 // same edit — a normal commit/cancel via focusout, and renderTasks's
 // onEditCancelled firing because the row disappeared out from under an
 // open edit (e.g. a concurrent delete lands while the title is still being
@@ -101,6 +120,15 @@ const taskMenuMoveOutItem = taskMenu.querySelector('[data-action="move-out"]');
 // Step 11 (D9): shown only for a task that currently has a parent — see
 // openTaskMenuForTask below.
 const taskMenuMoveToTopItem = taskMenu.querySelector('[data-action="move-to-top"]');
+// Step 12 (D7): hidden for a completed task, label toggles per current
+// `pinned` state — see openTaskMenuForTask below.
+const taskMenuTogglePinItem = taskMenu.querySelector('[data-action="toggle-pin"]');
+
+// Step 12 (D1/D8): the Focus section/list — a third container rendered
+// alongside Inbox/main from the same renderTasks call (render.js), hidden
+// entirely by renderMainView below whenever nothing is pinned.
+const focusSection = document.getElementById("focus-section");
+const focusList = document.getElementById("focus-list");
 
 // Step 9: the two view panels and the buttons that switch between them.
 const mainView = document.getElementById("main-view");
@@ -172,6 +200,13 @@ function openTaskMenuForTask(taskId, x, y) {
   // Step 11 (D9): only a task that already has a parent has anywhere to
   // "promote" from — a root task choosing this would be a no-op.
   taskMenuMoveToTopItem.style.display = task.parentId != null ? "" : "none";
+  // Step 12 (D7): only a task that is neither completed nor deleted may be
+  // pinned — a finished task isn't "what I'm working on now". `task.deleted`
+  // is already refused above (the `if (!task || task.deleted) return;`
+  // guard), so only `completed` needs checking here. Label reflects the
+  // task's CURRENT pinned state at open time.
+  taskMenuTogglePinItem.style.display = task.completed ? "none" : "";
+  taskMenuTogglePinItem.textContent = task.pinned ? "Unpin from Focus" : "Pin to Focus";
   taskMenu.dataset.taskId = taskId;
   taskMenu.hidden = false;
 
@@ -233,11 +268,32 @@ function renderMainView() {
   const visibleIdsFor = (tasks) =>
     new Set(tasks.filter((task) => showCompleted || !task.completed).map((task) => task.id));
 
+  // Step 12 (D2/D3/D5/D8): Focus is a flat, hand-picked set of pinned tasks —
+  // never a subtree, never a second `renderTasks` call (render.js's own
+  // containers-doc comment explains why) — ordered with the exact same
+  // sibling comparator the main list already uses (render.js's sortTasks,
+  // itself just a thin wrapper on compareSiblings, the seam step 16
+  // replaces), so Focus "mirrors list order" for free and inherits step 16's
+  // quadrant-first ordering the moment it lands, with no second ordering rule
+  // to keep in sync. Cross-parent order is arbitrary-but-stable until then
+  // (see this step's Decisions entry in PROGRESS.md). `!task.completed` here
+  // is defensive, not the actual mechanism that hides a finished task — D5
+  // unconditionally clears `pinned` the instant a task completes (directly OR
+  // via a step-6 cascade), so a completed+pinned task should never exist in
+  // the store to begin with; this filter just means a stale/hand-edited doc
+  // can't leak a finished task into Focus even if that invariant is ever
+  // violated some other way. `showCompleted` deliberately does NOT gate this
+  // filter the way it gates the main list/Inbox — a task's pinned flag being
+  // false is what removes it from Focus, unconditionally, not a toggle.
+  const focusTasks = nonDeletedTasks.filter((task) => task.pinned && !task.completed);
+  focusSection.hidden = focusTasks.length === 0; // D8: no empty heading when nothing is pinned
+
   renderTasks(
     [
       { element: inboxList, tasks: inboxTasks, visibleIds: visibleIdsFor(inboxTasks) },
       { element: taskList, tasks: mainTasks, visibleIds: visibleIdsFor(mainTasks) },
     ],
+    { element: focusList, tasks: focusTasks },
     (id, field) => closeEdit(id, field)
   );
 }
@@ -396,6 +452,13 @@ taskForm.addEventListener("submit", (event) => {
 // that isn't completed can't still be "closed by" anything, so leaving a
 // stale stamp there would misrepresent an open task as cascade-closed the
 // next time this same filter goes looking for it.
+//
+// Step 12 (D6): un-completing deliberately does NOT restore `pinned`. Both
+// writes below spread the existing task/current object without touching
+// `pinned` at all, so whatever the completing branch already set it to (D5:
+// always `false`) is exactly what a reopened task keeps. Pinning is a cheap,
+// explicit, one-click act; silently resurrecting a pin the user never asked
+// to restore on reopen would be worse than just making them re-pin it.
 taskSection.addEventListener("change", (event) => {
   const checkbox = event.target.closest(".task-item__checkbox");
   if (!checkbox) return;
@@ -448,8 +511,9 @@ taskSection.addEventListener("change", (event) => {
       // one row the user actually pressed still reflects their action.
       // closedByCascadeFrom is forced to null here regardless of any stale
       // prior value — this completion is the user's own explicit act, never
-      // a cascade effect.
-      await saveTask(userId, { ...task, completed: true, closedByCascadeFrom: null });
+      // a cascade effect. Step 12 (D5): completing ALSO unpins — Focus is
+      // "what I'm working on now", and a finished task is not that.
+      await saveTask(userId, { ...task, completed: true, closedByCascadeFrom: null, pinned: false });
 
       // Snapshotted once before the loop: nothing else can change these
       // tasks mid-loop (the mutation queue serializes against every other
@@ -459,7 +523,12 @@ taskSection.addEventListener("change", (event) => {
       for (const id of descendantsToClose) {
         const current = currentById.get(id);
         if (!current || current.completed) continue; // core rule: never restamp an already-completed descendant
-        await saveTask(userId, { ...current, completed: true, closedByCascadeFrom: taskId });
+        // Step 12 (D5): a cascade-closed descendant unpins too, exactly like
+        // a direct completion — this is the easy-to-miss half of D5, called
+        // out by name in PROGRESS.md because a cascade is not "the user
+        // ticking that specific box" and it would be easy to only handle the
+        // clicked task's own write above and forget this one.
+        await saveTask(userId, { ...current, completed: true, closedByCascadeFrom: taskId, pinned: false });
       }
     } catch (error) {
       console.error("Failed to complete task:", error);
@@ -491,7 +560,8 @@ taskSection.addEventListener("click", async (event) => {
   // a link — opening it must not also drop the note into edit mode.
   if (event.target.closest("a")) return;
 
-  const taskId = event.target.closest("li")?.dataset.taskId;
+  const li = event.target.closest("li");
+  const taskId = li?.dataset.taskId;
   if (!taskId) return;
 
   // Step 9: Restore lives on a Trash row, not a main-list row, but the
@@ -518,12 +588,29 @@ taskSection.addEventListener("click", async (event) => {
     return;
   }
 
+  // Step 12 (D1/D4): a pinned task has TWO independent <li>s — its Focus row
+  // (inside #focus-list) and its normal-place row — each with its own
+  // editingTitle/editingNote state in render.js. Which one this click landed
+  // on decides which pair of begin*Edit functions (and which openEdits key,
+  // via beginEdit's field string) to use, so opening an edit here can never
+  // accidentally toggle the OTHER row's independent edit state.
+  const isFocusRow = li.closest("#focus-list") != null;
   if (event.target.closest(".task-item__label")) {
-    beginEdit(taskId, "title");
-    beginTitleEdit(taskId);
+    if (isFocusRow) {
+      beginEdit(taskId, "title:focus");
+      beginTitleEditFocus(taskId);
+    } else {
+      beginEdit(taskId, "title");
+      beginTitleEdit(taskId);
+    }
   } else if (event.target.closest(".task-item__note-display")) {
-    beginEdit(taskId, "note");
-    beginNoteEdit(taskId);
+    if (isFocusRow) {
+      beginEdit(taskId, "note:focus");
+      beginNoteEditFocus(taskId);
+    } else {
+      beginEdit(taskId, "note");
+      beginNoteEdit(taskId);
+    }
   }
 });
 
@@ -841,6 +928,39 @@ async function handleMoveOutOfInboxClick(taskId) {
   });
 }
 
+// Step 12 (D7): pin/unpin a single task into Focus. Context-menu only — no
+// inline per-row button — the same shape as step 11's "Move to top level"
+// (D9): one shared handler, routed to from the menu's click dispatch below,
+// with one enqueueMutation-wrapped whole-document saveTask. It simply flips
+// whatever `pinned` IS at write time (re-read fresh, not the value the menu
+// happened to show when it was opened) — there is no separate "pin" vs
+// "unpin" function, matching the single toggle affordance the menu item
+// itself is (D7's label already told the user which way this click goes).
+// Only a task that is neither completed nor deleted may end up pinned (D5's
+// invariant already keeps a completed task unpinned; this guards the write
+// itself rather than trusting the menu's own visibility check, the same
+// belt-and-suspenders pattern as every other handler in this file that
+// re-validates inside the queued mutation instead of trusting click-time
+// state).
+async function handleTogglePinClick(taskId) {
+  const userId = getCurrentUserId();
+  const task = getTasks().find((t) => t.id === taskId);
+  if (!userId || !task || task.deleted || task.completed) return;
+
+  await enqueueMutation(async () => {
+    const currentUserId = getCurrentUserId();
+    const currentTask = getTasks().find((t) => t.id === taskId);
+    if (!currentUserId || !currentTask || currentTask.deleted || currentTask.completed) return;
+    try {
+      await saveTask(currentUserId, { ...currentTask, pinned: !currentTask.pinned });
+      await refreshTasks();
+    } catch (error) {
+      console.error("Failed to toggle pin:", error);
+      alert("Could not update Focus.");
+    }
+  });
+}
+
 // 5c. Enter commits a title edit (titles are single-line). Escape cancels
 // either edit without saving. Notes are multi-line, so Enter is left alone
 // there — it types a newline — and a note edit only ever commits on blur
@@ -867,41 +987,63 @@ taskSection.addEventListener("keydown", (event) => {
 // row: it reverts to the last-saved value and closes, telling the user the
 // edit was discarded, rather than re-alerting every time focus tries to
 // leave.
+//
+// Step 12 (D1/D4): `isFocusRow` picks which of the two independent edit-mode
+// function pairs (render.js's main vs. `*Focus` exports) this specific input
+// belongs to — the same row-vs-row disambiguation the click-to-edit listener
+// above uses — and `field` gets a `:focus` suffix to match the openEdits key
+// beginEdit used when this edit opened, so closeEdit's idempotent guard
+// closes exactly the interaction this row's edit actually holds, never the
+// OTHER row's independent one for the same task.
 taskSection.addEventListener("focusout", async (event) => {
   const target = event.target;
   const isTitleInput = target.classList?.contains("task-item__title-input");
   const isNoteInput = target.classList?.contains("task-item__note-input");
   if (!isTitleInput && !isNoteInput) return;
 
-  const field = isTitleInput ? "title" : "note";
-  const taskId = target.closest("li")?.dataset.taskId;
+  const li = target.closest("li");
+  const isFocusRow = li?.closest("#focus-list") != null;
+  const field = (isTitleInput ? "title" : "note") + (isFocusRow ? ":focus" : "");
+  const taskId = li?.dataset.taskId;
   const userId = getCurrentUserId();
   const task = getTasks().find((t) => t.id === taskId);
+
+  const endEdit = () => {
+    if (isTitleInput) (isFocusRow ? endTitleEditFocus : endTitleEdit)(taskId);
+    else (isFocusRow ? endNoteEditFocus : endNoteEdit)(taskId);
+  };
+  const getValue = () =>
+    isTitleInput
+      ? (isFocusRow ? getTitleInputValueFocus : getTitleInputValue)(taskId)
+      : (isFocusRow ? getNoteInputValueFocus : getNoteInputValue)(taskId);
+  const setValue = (value) => {
+    if (isTitleInput) (isFocusRow ? setTitleInputValueFocus : setTitleInputValue)(taskId, value);
+    else (isFocusRow ? setNoteInputValueFocus : setNoteInputValue)(taskId, value);
+  };
 
   const cancelling = target.dataset.cancelling === "true";
   delete target.dataset.cancelling;
 
   if (cancelling || !userId || !task) {
-    if (isTitleInput) endTitleEdit(taskId);
-    else endNoteEdit(taskId);
+    endEdit();
     closeEdit(taskId, field);
     return;
   }
 
   if (isTitleInput) {
-    const newTitle = getTitleInputValue(taskId).trim();
+    const newTitle = getValue().trim();
     const tags = parseTags(newTitle);
     if (!newTitle || newTitle.length > TITLE_MAX_LENGTH) {
       alert(`Title must be between 1 and ${TITLE_MAX_LENGTH} characters. Edit discarded.`);
-      setTitleInputValue(taskId, task.title); // revert — don't trap the row on an invalid value
-      endTitleEdit(taskId);
+      setValue(task.title); // revert — don't trap the row on an invalid value
+      endEdit();
       closeEdit(taskId, field);
       return;
     }
     if (tags.length > TAGS_MAX_COUNT) {
       alert(`A task can have at most ${TAGS_MAX_COUNT} tags. Edit discarded.`);
-      setTitleInputValue(taskId, task.title);
-      endTitleEdit(taskId);
+      setValue(task.title);
+      endEdit();
       closeEdit(taskId, field);
       return;
     }
@@ -917,17 +1059,17 @@ taskSection.addEventListener("focusout", async (event) => {
       } catch (error) {
         console.error("Failed to save title:", error);
         alert("Could not save title.");
-        setTitleInputValue(taskId, currentTask.title); // revert to the last-saved value
+        setValue(currentTask.title); // revert to the last-saved value
       }
     });
-    endTitleEdit(taskId);
+    endEdit();
     closeEdit(taskId, field);
   } else {
-    const newNote = getNoteInputValue(taskId);
+    const newNote = getValue();
     if (newNote.length > NOTE_MAX_LENGTH) {
       alert(`Note must be ${NOTE_MAX_LENGTH} characters or fewer. Edit discarded.`);
-      setNoteInputValue(taskId, task.note || "");
-      endNoteEdit(taskId);
+      setValue(task.note || "");
+      endEdit();
       closeEdit(taskId, field);
       return;
     }
@@ -941,10 +1083,10 @@ taskSection.addEventListener("focusout", async (event) => {
       } catch (error) {
         console.error("Failed to save note:", error);
         alert("Could not save note.");
-        setNoteInputValue(taskId, currentTask.note || "");
+        setValue(currentTask.note || "");
       }
     });
-    endNoteEdit(taskId);
+    endEdit();
     closeEdit(taskId, field);
   }
 });
@@ -1565,6 +1707,7 @@ taskMenu.addEventListener("click", async (event) => {
   if (action === "add-subtask") await handleAddSubtaskClick(taskId);
   else if (action === "move-out") await handleMoveOutOfInboxClick(taskId);
   else if (action === "move-to-top") await performReparent(taskId, null);
+  else if (action === "toggle-pin") await handleTogglePinClick(taskId);
   else if (action === "delete") await handleDeleteClick(taskId);
 });
 

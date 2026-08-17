@@ -1,6 +1,6 @@
 # Progress
 
-Last updated: 2026-08-17 — **Steps 1–11 implemented.** Step 12 (Focus/pin)
+Last updated: 2026-08-17 — **Steps 1–12 implemented.** Step 13 (Dates)
 is next. No signed-in browser walkthrough has been reported back for any step
 yet — the click-path below is still the first thing to run.
 
@@ -19,8 +19,8 @@ yet — the click-path below is still the first thing to run.
 | 9 | Trash | done |
 | 10 | Manual reorder | done |
 | 11 | Drag-to-reparent | done |
-| 12 | Focus / pin | next |
-| 13 | Dates | planned |
+| 12 | Focus / pin | done |
+| 13 | Dates | next |
 | 14 | Tag colors | planned |
 | 15 | Quadrant mapping | planned |
 | 16 | Priority ordering | planned |
@@ -30,60 +30,47 @@ yet — the click-path below is still the first thing to run.
 | 20 | Search — advanced | planned |
 | 21 | Export / import | planned |
 
-## Resume here — step 12 (Focus/pin)
+## Resume here — step 13 (Dates)
 
-**Exact next action:** implement step 12, a "Focus" section that shows every
-pinned task, per product-spec.md §7:
+**Exact next action:** implement step 13, per product-spec.md §5 ("Dates &
+Temporal Tracking"):
 
-- **No cap** on how many tasks can be pinned — pinning/unpinning is entirely
-  the user's call, and the app must never block a pin or silently drop one.
-- **Pinned tasks appear in Focus in the same order they hold in the main
-  list** — Focus carries no ordering of its own to maintain, so it is a
-  *filtered view* over the same `order` values the main list already sorts
-  by, not a second list with its own sequence.
-- **A pinned task that gets completed disappears from Focus** — the section
-  is "what's left to do," not a record of what was. This mirrors the existing
-  "completed tasks hide unless 'show completed' is on" filter (step 1); Focus
-  most likely needs the exact same completed-filter applied on top of the
-  pinned filter, not a separate rule.
+- **Task Dates:** assign a specific due date to any task.
+- **Task Age:** computed from creation date (e.g. "task is 20 days old"),
+  read-only, never stored separately.
+- **Recurrence and the Overdue Alerts Screen are read into §5 but are their
+  OWN later step (18, "Recurrence")** — the step table has no separate
+  "overdue alerts" entry, so whether that screen ships alongside step 13's
+  plain due-date UI or waits for step 18 is this step's own scoping call to
+  make, not something already decided here. Re-read product-spec.md §5 in
+  full before committing to a scope — don't assume step 13 is "just a date
+  picker" without checking whether the overdue screen is expected sooner.
 
 **What already exists for this step to build on:**
-- **The `pinned: bool` field is already in the schema, written on every
-  task, always `false`** — see `taskService.js`'s `addTask`/`normalizeTask`
-  and `firestore.rules`' `isValidTask()` (step 1's decision, confirmed still
-  correct by FIREBASE.md's schema table). No migration is needed; step 12 is
-  the first thing to ever write `true`.
-- **The Trash and Inbox precedent for "a third rendered collection alongside
-  the existing two"**: step 9 added `#trash-view`/`renderTrash` as a second
-  screen (view-switch, not a third simultaneous container); step 5 added the
-  Inbox as a second *simultaneous* container sharing one `entriesByTaskId`
-  Map and one `renderTasks` call (see step 5's Decisions entries below). Focus
-  is closer to step 5's shape than step 9's — it renders *alongside* the main
-  list/Inbox (all visible at once), not as a separate screen you navigate to —
-  so the likely design is a third `{ element, tasks, visibleIds }` entry in
-  `renderMainView`'s `renderTasks` call, reusing the *same* `<li>` a task
-  already has elsewhere (a task can be simultaneously "in Focus" and "in the
-  main list" — pinning doesn't remove it from where it already lives, unlike
-  filing out of the Inbox which does). That breaks step 5's "one task id maps
-  to exactly one `<li>`" invariant on purpose — Focus is the first place in
-  this app a task is meant to render in **two** places at once, which
-  `entriesByTaskId`'s current one-entry-per-id shape does not support. This is
-  the central design question step 12 has to answer before writing any code:
-  either give Focus rows their own separate, second Map (parallel to
-  `trashEntriesByTaskId`'s precedent, not `entriesByTaskId`'s), or find another
-  way to reuse a `<li>` in two containers at once (moving it back and forth
-  per render would fight the main list for ownership of the same node).
-- **Toggling `pinned` is a whole-document `saveTask`, routed through
-  `enqueueMutation`, exactly like every other field-level mutation** (title,
-  note, `completed`, `inInbox`) — there is no reason to expect this one to
-  need special handling; the interesting work is entirely on the render side.
+- **`dueDate: timestamp | null` is already in the schema and already accepted
+  by `addTask`** (`taskService.js`: `dueDate: taskDetails.dueDate ? new
+  Date(taskDetails.dueDate) : null`), per FIREBASE.md's schema table — "Accepted
+  by `addTask`, not yet supplied by the UI." No `saveTask`/`normalizeTask`
+  change is needed to persist a due date; `normalizeTask` doesn't even need a
+  fallback since the field already defaults to `null` at creation.
+- **`createdAt` is already a real `serverTimestamp()`** on every task, so task
+  age is a pure display computation (`Date.now() - createdAt.toMillis()`) —
+  no new field, no migration.
+- **The context-menu-only-action pattern is now well established** (step 11's
+  "Move to top level", step 12's "Pin to Focus"/"Unpin from Focus") if setting
+  a due date turns out to want a menu entry rather than (or alongside) an
+  inline per-row control — follow `openTaskMenuForTask`'s
+  show/hide-per-task-state pattern rather than inventing a new one.
+- **firestore.rules likely needs a real look**: `isValidTask()` should be
+  checked for whether it already validates `dueDate`'s type/shape or is
+  silent on it (silent would mean any value currently passes rules, which is
+  probably not intended once the UI starts writing real dates).
 
-**Files likely touched:** `public/index.html` (a `#focus-section`/`#focus-list`,
-and a pin toggle control per row — a button or checkbox, TBD), `public/render.js`
-(the second-Map-or-shared-node decision above, plus whatever toggles the pin
-control's visual state), `public/app.js` (a `handlePinToggleClick` mirroring
-`handleMoveOutOfInboxClick`'s shape, and wiring the new container into
-`renderMainView`).
+**Files likely touched:** `public/index.html` (a due-date input per row, and/or
+a menu item), `public/app.js` (a `handleSetDueDateClick`-shaped handler through
+`enqueueMutation`, the "age" display computation), `public/render.js` (rendering
+the due date and/or age string per row), possibly `firestore.rules` if
+`isValidTask()` needs a real `dueDate` check it doesn't have yet.
 
 **No step has been confirmed in a signed-in browser yet.** Everything below marked
 "verified" was verified unsigned-in, by driving the real modules with synthetic
@@ -198,6 +185,40 @@ a bogus `does not provide an export named ...` error and cost real time once alr
 - `FIREBASE.md` — `parentId`/`ancestors`/`order`/`inInbox` rows corrected to
   note step 11 also writes them (previously documented as create-time-only or
   step-10-only).
+
+**Files touched (step 12):**
+- `public/render.js` — a third, separate `focusEntriesByTaskId` Map (D4,
+  parallel to `trashEntriesByTaskId`'s existing precedent), never merged with
+  the main `entriesByTaskId` Map; `renderTasks`'s signature grew a
+  `focusContainer` parameter (`{ element, tasks } | null`) rendered inside the
+  SAME call via the flat branch (D1/D2: `sortTasks`, no `buildTree`/`depthOf`,
+  every row at depth 0) with its own seen-set/cleanup pass; the title/note
+  edit-mode functions (`beginTitleEdit`/`endTitleEdit`/`getTitleInputValue`/
+  `setTitleInputValue` and the note equivalents) were refactored into
+  map-parameterized `*In(map, taskId)` helpers with thin wrappers, plus new
+  `*Focus` exports (`beginTitleEditFocus`, `endTitleEditFocus`,
+  `getTitleInputValueFocus`, `setTitleInputValueFocus`, and the four note
+  equivalents) addressing the Focus row's own independent entry.
+- `public/app.js` — `focusSection`/`focusList` DOM refs and the
+  `taskMenuTogglePinItem` menu-item ref; `renderMainView`'s `focusTasks`
+  filter (`pinned && !completed`) and `focusSection.hidden` toggle (D8);
+  `handleTogglePinClick` (D7, the shared pin/unpin handler, one
+  `enqueueMutation`-wrapped `saveTask`); the checkbox `change` listener's
+  completing branch now writes `pinned: false` on both the clicked task AND
+  every cascade-closed descendant (D5); `openTaskMenuForTask` now toggles the
+  pin item's visibility (hidden if completed) and label (per current
+  `pinned`); the `taskMenu` click dispatch gained the `toggle-pin` action; the
+  click-to-edit listener and the `focusout` commit/cancel listener both gained
+  an `isFocusRow` branch (`li.closest("#focus-list")`) so they address the
+  correct one of a pinned task's two independent `<li>`/edit-state pairs,
+  including the `openEdits` key growing a `:focus` suffix for that row.
+- `public/index.html` — `#focus-section`/`#focus-list` (hidden by default,
+  placed above `#inbox-section` per D8), its CSS (mirrors `#inbox-section`'s),
+  and the `data-action="toggle-pin"` menu button (mirrors step 11's
+  "Move to top level" pattern).
+- No change to `firestore.rules`, `firestore.indexes.json`, or
+  `taskService.js` — `pinned` was already a validated, normalized field
+  (step 1); step 12 is the first thing to ever write `true` (D10).
 
 **Verified (actually exercised in a real browser at localhost:5050, unsigned-in, by
 driving the real modules directly):**
@@ -431,6 +452,85 @@ driving the real modules directly):**
   - Console had zero new errors across the whole step-11 run (one pre-existing
     stale error from the module-caching issue this session's setup hit and
     fixed — see below — was the only line in the log throughout).
+- **Step 12 (Focus/pin), verified unsigned-in against the real `render.js`,
+  `store.js`, and `taskTree.js`, driven through the real DOM for everything
+  that doesn't require a Firestore write, and through direct replication of
+  app.js's exact (unexported) mutation logic for everything that does — see
+  the Assumed note below for exactly which parts that split covers:**
+  - **12a** — a synthetic task pinned 2 levels deep (P > C1 > C2, C2 pinned)
+    rendered through the real `renderTasks`: `#task-list > li[data-task-id="C2"]`
+    and `#focus-list > li[data-task-id="C2"]` are two distinct DOM nodes
+    (`sameNode: false`), in their two respective parents, with the main-list
+    one carrying `--depth: 2` (its true depth) and the Focus one `--depth: 0`.
+  - **12b** — two pinned root siblings A (order 10000) and B (order 20000)
+    initially rendered A before B in BOTH the main list and Focus. After
+    swapping their `order` values (A: 25000, B: 15000) and re-rendering,
+    BOTH the main list and Focus flipped to `[B, A]` together — observed
+    directly (`mainOrderAB: ["B","A"]`, `focusIds` showing B before A), not
+    inferred from one list alone.
+  - **12c** — with P pinned (parent), C1 unpinned (child of P), and C2 pinned
+    (child of C1): `focusIds` was exactly `["P", "C2", "K1", "A", "B", "D"]`
+    (plus unrelated pinned tasks from the same dataset) — C1 never appeared,
+    proving neither P's pin (parent) nor C2's pin (child) leaked an
+    ancestor/descendant into Focus.
+  - **12d** — replicating the checkbox `change` listener's exact completing
+    branch (app.js) for a directly-pinned task D: after the write, `D.pinned
+    === false`, `D.completed === true`, `D.closedByCascadeFrom === null`,
+    removed from Focus, and the main-list checkbox (with "show completed" on)
+    showed checked.
+  - **12e** — same replication for a cascade: parent K (unpinned) with pinned,
+    open child K1, completing K. `descendantIds(tree, "K")` returned exactly
+    `["K1"]`; after the write, `K1.pinned === false`, `K1.completed === true`,
+    `K1.closedByCascadeFrom === "K"`, removed from Focus — the easy-to-miss
+    half of D5 (a cascade-closed descendant unpins too, not just the task the
+    user actually clicked).
+  - **12f** — continuing from 12e's post-state, replicating the un-completing
+    branch's exact global filter (`closedByCascadeFrom === "K"`) reopening K1:
+    `K1.completed === false`, `K1.closedByCascadeFrom === null`, and
+    `K1.pinned === false` — NOT restored to `true` (D6), and correctly absent
+    from Focus (pinned is false, regardless of being open again).
+  - **12g** — with zero pinned tasks, `#focus-section.hidden === true`; after
+    loading a dataset with 6 pinned tasks and re-rendering, `hidden === false`.
+  - **12h** — a real `contextmenu` dispatched on each of three rows: an
+    unpinned open task (M) showed the pin item with `display: ""` and text
+    `"Pin to Focus"`; a pinned open task (D) showed `"Unpin from Focus"`; a
+    completed task (N, rendered via "show completed") showed the item with
+    `display: "none"`.
+  - **12i** — a REAL click (via the browser tool's element-ref click, not a
+    synthetic `MouseEvent`) opened title-edit on task P's FOCUS row; typed
+    text and a caret set mid-string; a full `renderTasks` re-render (same
+    pattern as every prior step's "survives an unrelated refresh" proof) left
+    `titleInput.value` and `[selectionStart, selectionEnd]` unchanged,
+    `document.activeElement` still that exact input, and — the assertion this
+    proof specifically exists for — `offsetParent !== null` (not just
+    `querySelector` truthiness, which is always true regardless of visibility
+    since the input never leaves the DOM). The main-list row for the SAME
+    task id was independently confirmed to have stayed on its label
+    (`offsetParent === null` for its own title input, text unchanged) —
+    proving the two entries really are independent, not just that neither
+    happened to break. A real `Escape` afterward correctly discarded the
+    typed text and reverted to the label view.
+  - A real `change` event dispatched on a Focus row's checkbox confirmed the
+    already-documented unsigned-in no-op: `enqueueMutation`'s own `!userId`
+    guard fires before any store mutation, so the task object was
+    byte-identical (`JSON.stringify` equal) before and after the click —
+    this is what makes 12d/12e/12f's "replicate the exact write" approach the
+    correct substitute, not a shortcut around a reachable path.
+  - Console had zero errors across the whole step-12 run. Every module parsed
+    with `node --check`, and every name step 12 added to `render.js`'s import
+    list in `app.js` was cross-checked against `render.js`'s real `export`
+    statements (not just grepped for existence — checked that the import
+    list and the export list are the same set).
+  - A discovery mid-verification, not a defect: programmatic `.blur()` calls
+    do not fire `blur`/`focusout` events at all in this backgrounded
+    browser-automation tab (`document.hasFocus()` was `false`), which silently
+    no-ops any test that tries to close an edit that way. A REAL click via the
+    browser tool's own input dispatch (not a script-dispatched `MouseEvent`)
+    does establish real page focus and real `blur`/`focusout` firing — 12i's
+    click was redone this way after the first, script-dispatched attempt's
+    cancel step silently failed to close the edit. Worth remembering for any
+    later step's browser verification that relies on closing an edit or menu
+    via a synthetic blur.
 
 **Assumed (written and reasoned about, never exercised signed-in):**
 - Every path that actually reaches Firestore: create, save, soft-delete, and the
@@ -495,6 +595,27 @@ driving the real modules directly):**
   and whether `refreshTasks`'s refetch then renders the moved subtree in its
   new place end-to-end, is unverified — same limitation as every other write
   path above.
+- **Every real Firestore call step 12 adds.** No `saveTask` call inside
+  `handleTogglePinClick`'s actual `enqueueMutation` body, nor the checkbox
+  `change` listener's now-`pinned`-aware completing branch, has been run
+  against Firestore — this session, like step 11's, never set a fake
+  signed-in uid, and directly confirmed (not just assumed) that a real
+  `change` event on a Focus row's checkbox leaves the task object
+  byte-identical, proving the write path really is unreachable rather than
+  merely returning early for some other, coincidental reason. 12d/12e/12f's
+  "completing unpins, cascade-completing unpins the descendant, un-completing
+  doesn't re-pin" claims were verified by replicating app.js's exact
+  (unexported) mutation logic against the real `store.js`/`taskTree.js` and
+  observing the resulting store + re-render — the same substitute methodology
+  steps 6–11 already established for anything gated behind a real write, not
+  a new or weaker technique invented for this step. What WAS verified fully
+  live, with no substitution: every purely structural/DOM claim (12a, 12b,
+  12c, 12g, 12h) and the edit-survives-a-re-render claim (12i), none of which
+  need a Firestore write to observe — pinning/unpinning a task in this app is
+  entirely a field toggle with no cascade of its own on the write side (unlike
+  steps 8/9/11's multi-document cascades), so there is nothing else step 12
+  adds to Firestore that steps 1–11's existing "never actually written"
+  limitation doesn't already cover identically.
 - **This session's own setup hit the exact stale-module-cache trap this
   document already warns about** (see "Hard-reload the page" above), one
   level worse: a *page-level* hard reload (Cmd+Shift+R) was not enough to
@@ -840,6 +961,99 @@ driving the real modules directly):**
   ones or the root) is explicitly out of scope for this step** — this item
   only covers the one case drag structurally cannot express (there is no row
   to drop onto for "no parent").
+- **step 12 (D1)** — Focus is a THIRD container rendered inside `#task-section`
+  in the SAME single `renderTasks` call as Inbox and main (never a second
+  call) — `renderTasks` grew a dedicated `focusContainer` parameter for this,
+  rather than a third array entry, precisely because it is flat (D2) and
+  needs its own Map (D4), not because it renders separately. Placing it
+  inside `#task-section` means it inherits every existing delegated listener
+  (complete, inline edit, note, delete, drag handle, context menu) with zero
+  new delegation — any later step adding a fourth simultaneous container
+  should do the same rather than wiring its own listeners.
+- **step 12 (D2)** — Focus is a FLAT list: exactly the pinned tasks
+  themselves, never their children or ancestors. It reuses `render.js`'s
+  `flattenTree`+`buildTree`+`depthOf` machinery for NOTHING — it calls
+  `sortTasks` directly on the pinned subset and renders every row at
+  depth 0. A pinned task's subtree relationship to other tasks is simply not
+  Focus's concern; Focus answers "what am I working on now," a hand-picked
+  set, not a structural view.
+- **step 12 (D3)** — Focus order is the SAME `sortTasks`/`compareSiblings`
+  seam the main list sorts with — no second ordering rule, no new
+  `focusOrder` field. This is deliberately the exact seam step 16 (priority
+  ordering) replaces, so Focus inherits quadrant-first ordering for free the
+  moment that step lands. Because the pinned set spans multiple parents,
+  `order` is only truly comparable within one sibling group — sorting the
+  flat set by it anyway makes cross-group order **arbitrary but stable**
+  (ties broken by original array position, itself stable) until step 16 gives
+  every task a real cross-group key. Verified (12b): a pinned parent, a
+  pinned grandchild, and two pinned root siblings sorted as
+  `[P, C2, K1, A, B, D]` — the three depth-differing, cross-group ties (P,
+  C2, K1 all had sibling-local `order: 1000`) landed in insertion order, not
+  some depth- or parent-aware order, exactly the "arbitrary but stable"
+  behavior this decision predicts.
+- **step 12 (D4)** — a pinned task renders in Focus AND its normal place at
+  once, which breaks step 5's "one task id maps to exactly one `<li>`"
+  invariant on purpose. Solved by giving Focus its own separate
+  `focusEntriesByTaskId` Map — the exact same precedent step 9's Trash
+  already set with `trashEntriesByTaskId` — rather than trying to make one
+  `<li>` serve two containers. The corollary this decision forces: every
+  render.js function that used to be addressed by taskId alone (the title/note
+  edit-mode begin/end/get/set functions) needed a SECOND, Focus-addressed
+  variant (`beginTitleEditFocus`, etc.), because a taskId alone can no longer
+  uniquely identify "the entry" once a task can have two. app.js's click/
+  focusout listeners now check `li.closest("#focus-list")` to pick the right
+  pair, and the `openEdits` idempotent-close key grew a `:focus` suffix for
+  the same reason — without it, opening an edit on one of a pinned task's two
+  rows and having the OTHER row's disappearance (or a stray double-open)
+  close it would double-decrement the interaction guard, the exact bug class
+  `openEdits`/`menuOpen`/`dragInteractionOpen` already exist to prevent.
+- **step 12 (D5)** — completing a task ALWAYS clears `pinned: false` in the
+  SAME write, whether it's the task the user directly ticked or a
+  step-6-cascade-closed descendant. Reason: Focus is "what I'm working on
+  now," and a finished task categorically isn't that, so there is no window
+  where a completed task can still show in Focus (unlike the main list's
+  "completed tasks hide unless 'show completed' is on" filter, which Focus
+  deliberately does NOT reuse — see the note on the original step-12 planning
+  text in this file's git history, which assumed that filter would apply
+  here before D5 was locked to something stricter: an unconditional clear,
+  not a toggle-dependent hide). Verified (12e) that the cascade half is real,
+  not just the direct-click half — it is the one easy to implement only
+  halfway and forget.
+- **step 12 (D6)** — un-completing (step 7's reopen, direct or via reversing
+  a cascade) deliberately does NOT restore `pinned`. Both reopen writes
+  (app.js's checkbox listener) spread the existing task without touching
+  `pinned` at all, so whatever D5 already set it to (always `false`) is what
+  a reopened task keeps. Pinning is a cheap, explicit, one-click act;
+  silently resurrecting a pin the user never asked to restore would be worse
+  than just making them re-pin it. Verified (12f): reopening a
+  cascade-closed, previously-pinned descendant left `pinned: false`.
+- **step 12 (D7)** — pin/unpin is a context-menu-only action (no inline
+  per-row button), following step 11's "Move to top level" as the pattern
+  for a menu-only affordance. One shared `handleTogglePinClick` handler, one
+  `enqueueMutation`-wrapped whole-document `saveTask` that flips whatever
+  `pinned` IS at write time. The menu item is hidden entirely for a
+  completed task (`openTaskMenuForTask`) — only a task that is neither
+  completed nor deleted may be pinned — and its label reflects the task's
+  CURRENT pinned state at open time ("Pin to Focus" / "Unpin from Focus").
+- **step 12 (D8)** — the Focus section is hidden entirely
+  (`focusSection.hidden = focusTasks.length === 0`) when nothing is pinned —
+  no empty heading sits above the Inbox on a page with no pins. It renders
+  ABOVE the Inbox and the main list, since it's the "now" list.
+- **step 12 (D9)** — deleting a task (leaf or cascade) leaves `pinned`
+  completely untouched — `softDeleteTask` never writes it, so it is neither
+  cleared nor re-checked. Rationale: delete is reversible (the Trash is a
+  holding area, step 9), so a delete should not quietly destroy an unrelated
+  field; restoring from Trash therefore brings the pin back exactly as it
+  was. This is a deliberate asymmetry with D5's completion rule, not an
+  inconsistency — completing is a real, permanent statement about the task's
+  work being done, which is why THAT one clears the pin and deleting doesn't.
+  Focus's own render-time filter (`pinned && !completed`, over the
+  non-deleted task set) is what keeps a deleted-but-still-pinned task out of
+  Focus while it sits in the Trash, without needing to touch the field itself.
+- **step 12 (D10, not really a decision)** — no change to `firestore.rules`
+  or `firestore.indexes.json`: `pinned is bool` was already validated (step
+  1), and step 12 is simply the first client code to ever write `true` to an
+  already-valid field. Nothing about the schema itself changed.
 
 ## Open items (not steps)
 

@@ -244,6 +244,17 @@
       list-style: none;
       pointer-events: none;
     }
+    /* Step 11: the reparent target highlight. `drop-indicator` above marks an
+       INSERTION POINT between two rows (a line); this marks a ROW ITSELF as
+       "drop here to become my child" (D2's middle-50%-of-the-row zone), so it
+       has to look different from the line, not reuse it. `outline` (not
+       `border`) so it never shifts the row's own layout/height the way a
+       border would, which would itself change where the 25/50/25 zone
+       boundaries fall on the very next pointermove. */
+    .task-item--reparent-target {
+      outline: 3px solid #f59e0b;
+      outline-offset: -3px;
+    }
     /* Step 9: the Trash view. Reuses the app's existing color language
        (danger red for the destructive framing) rather than inventing a new
        one. */
@@ -363,6 +374,13 @@
   <div id="task-menu" class="task-menu" hidden>
     <button type="button" class="task-menu__item" data-action="add-subtask">Add subtask</button>
     <button type="button" class="task-menu__item" data-action="move-out">Move out of Inbox</button>
+    <!-- Step 11 (D9): the promote-to-root move drag can't express — there is
+         no row to drop a task onto for "no parent". Shown only for a task
+         that currently HAS a parent (app.js's openTaskMenuForTask toggles
+         this the same way it already toggles "Move out of Inbox"). Routes
+         through the exact same reparent handler the drag-drop path uses
+         (performReparent in app.js), not a parallel implementation. -->
+    <button type="button" class="task-menu__item" data-action="move-to-top">Move to top level</button>
     <button type="button" class="task-menu__item task-menu__item--danger" data-action="delete">Delete</button>
   </div>
 

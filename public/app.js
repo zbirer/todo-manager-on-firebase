@@ -98,6 +98,9 @@ const inboxList = document.getElementById("inbox-list");
 const showCompletedToggle = document.getElementById("show-completed-toggle");
 const taskMenu = document.getElementById("task-menu");
 const taskMenuMoveOutItem = taskMenu.querySelector('[data-action="move-out"]');
+// Step 11 (D9): shown only for a task that currently has a parent — see
+// openTaskMenuForTask below.
+const taskMenuMoveToTopItem = taskMenu.querySelector('[data-action="move-to-top"]');
 
 // Step 9: the two view panels and the buttons that switch between them.
 const mainView = document.getElementById("main-view");
@@ -166,6 +169,9 @@ function openTaskMenuForTask(taskId, x, y) {
   // Only an Inbox row has anything to file out of the Inbox — same rule
   // updateTaskElement (render.js) uses for the inline per-row button.
   taskMenuMoveOutItem.style.display = task.inInbox ? "" : "none";
+  // Step 11 (D9): only a task that already has a parent has anywhere to
+  // "promote" from — a root task choosing this would be a no-op.
+  taskMenuMoveToTopItem.style.display = task.parentId != null ? "" : "none";
   taskMenu.dataset.taskId = taskId;
   taskMenu.hidden = false;
 
@@ -1012,13 +1018,27 @@ function cancelLongPress() {
 //   - otherSiblingIds: every OTHER live sibling's id, ascending by `order` —
 //     i.e. the exact order render.js's sortTasks/compareSiblings already
 //     renders them in. Used to find neighbours by array position.
-//   - target: `{ beforeId, afterId }` (either may be null, meaning "top of
-//     the group" / "bottom of the group") once the pointer is hovering a
-//     valid drop position, or `null` when it isn't hovering one yet, or is
-//     hovering an invalid one (product-spec.md's "a drag can be overruled...
-//     the interface should make that visible rather than letting a drag
-//     appear to work and then snap back" — an invalid target simply never
-//     becomes a valid one, rather than showing a misleading indicator).
+//   - tree / descendantIdSet / subtreeHeight (step 11, D3/D4): a snapshot
+//     taken once in beginDrag, not recomputed on every pointermove — nothing
+//     mutates the store mid-drag (the interaction guard blocks the 5-minute
+//     refresh, and nothing else calls refreshTasks() until the drop itself),
+//     so recomputing would be wasted work, not extra correctness. `tree` is
+//     built from the FULL task set, deleted tasks included, matching step 8's
+//     cascade-delete precedent — D4 counts a deleted descendant toward the
+//     depth cap for the same reason it must be rewritten in D5: it's
+//     restorable, and an `ancestors.size() > 6` write is rejected outright by
+//     firestore.rules, so nothing later in the write batch can be allowed to
+//     land in a state the rules would reject. `subtreeHeight` is the height
+//     of the dragged task's own subtree (0 for a leaf) — see D4's formula.
+//   - target: `{ type: 'sibling', beforeId, afterId }` (either id may be
+//     null, meaning "top of the group" / "bottom of the group") once the
+//     pointer is hovering a valid sibling drop position, or
+//     `{ type: 'reparent', parentId }` once it's hovering a valid reparent
+//     target (D1), or `null` when it isn't hovering a valid position of
+//     either kind (product-spec.md's "a drag can be overruled... the
+//     interface should make that visible rather than letting a drag appear
+//     to work and then snap back" — an invalid target simply never becomes a
+//     valid one, rather than showing a misleading indicator).
 //   - handleEl / pointerId: needed to release pointer capture on drop/cancel.
 let drag = null;
 
@@ -1058,6 +1078,31 @@ function hideDropIndicator() {
   dropIndicator.remove();
 }
 
+// Step 11 (D2): the middle-50%-of-the-row "reparent onto this task" zone
+// marks the ROW ITSELF as the target, not an insertion point between two
+// rows — a line indicator would be misleading there, since dropping doesn't
+// insert next to this row, it becomes this row's child. Tracked the same way
+// dropIndicator is (a single reference, moved rather than duplicated) so
+// switching from one hovered row's middle zone to another's always clears
+// the previous row's highlight instead of leaving it stuck once the pointer
+// moves on. No refresh can land mid-drag (see the `drag` doc comment above),
+// so the class survives untouched by updateTaskElement's own
+// `li.className = ...` for the whole time it's shown.
+let reparentHighlightLi = null;
+
+function showReparentHighlight(li) {
+  if (reparentHighlightLi === li) return; // already showing on this exact row
+  hideReparentHighlight();
+  li.classList.add("task-item--reparent-target");
+  reparentHighlightLi = li;
+}
+
+function hideReparentHighlight() {
+  if (!reparentHighlightLi) return;
+  reparentHighlightLi.classList.remove("task-item--reparent-target");
+  reparentHighlightLi = null;
+}
+
 function beginDrag(taskId, event, handleEl) {
   if (drag) return; // defensive: pointer capture below should make a second concurrent drag impossible
   const task = getTasks().find((t) => t.id === taskId);
@@ -1069,11 +1114,20 @@ function beginDrag(taskId, event, handleEl) {
     )
   ).map((t) => t.id);
 
+  // Step 11 (D4): snapshot the tree once for the whole drag. Full set —
+  // deleted tasks included — see the `drag` doc comment above for why.
+  const tree = buildTree(getTasks());
+  const descendantIdSet = new Set(descendantIds(tree, taskId));
+  const subtreeHeight = computeSubtreeHeight(tree, taskId);
+
   drag = {
     taskId,
     parentId: task.parentId,
     inInbox: task.inInbox,
     otherSiblingIds,
+    tree,
+    descendantIdSet,
+    subtreeHeight,
     target: null,
     handleEl,
     pointerId: event.pointerId,
@@ -1091,10 +1145,75 @@ function beginDrag(taskId, event, handleEl) {
   }
 }
 
+// Step 11 (D4): the height of `taskId`'s own subtree — 0 for a leaf, else how
+// many levels its deepest live-or-deleted descendant sits below it. `tree`
+// must be built from the FULL task set (deleted included) — see the `drag`
+// doc comment above beginDrag for why a deleted descendant still counts
+// toward the cap. Pure and side-effect-free, exported for direct
+// verification (same precedent as computeReorderOrder/selectPurgeCandidates
+// above) since it's the one piece of D4's math neither the drag's live check
+// nor performReparent's write-time re-check can skip.
+export function computeSubtreeHeight(tree, taskId) {
+  const ids = descendantIds(tree, taskId);
+  if (ids.length === 0) return 0;
+  const draggedDepth = depthOf(tree, taskId);
+  return Math.max(...ids.map((id) => depthOf(tree, id))) - draggedDepth;
+}
+
+// Step 11 (D3): the four refusals that keep a reparent drop from ever
+// "appearing to work and then snapping back" — the same rule step 10 already
+// applies to an invalid sibling target. `subtreeHeight` is
+// `computeSubtreeHeight(tree, draggedId)`, passed in rather than recomputed
+// here since both the drag's live check and performReparent's write-time
+// re-check already have it in hand. Pure (only reads `tree`), exported for
+// direct verification for the same reason as computeSubtreeHeight above —
+// both the live drag-hover check (via isValidReparentTarget below) and
+// performReparent's write-time re-check route through this one function, so
+// there is exactly one place the four refusal rules live.
+export function canReparent(tree, draggedId, newParentId, subtreeHeight) {
+  if (newParentId === draggedId) return false; // defensive: can't parent onto itself
+  const draggedTask = tree.byId.get(draggedId);
+  if (!draggedTask) return false;
+  if (descendantIds(tree, draggedId).includes(newParentId)) return false; // D3: would cut the tree into a cycle
+  if (draggedTask.parentId === newParentId) return false; // D3: no-op — already the parent
+  const newParentTask = tree.byId.get(newParentId);
+  if (!newParentTask || newParentTask.deleted) return false; // defensive: not a renderable row
+  if (depthOf(tree, newParentId) + 1 + subtreeHeight > 6) return false; // D4
+  return true;
+}
+
+// Live-drag wrapper around canReparent: `drag.tree`/`subtreeHeight` are the
+// beginDrag-time snapshot (see the `drag` doc comment for why recomputing
+// per-move isn't needed). `hoveredId === drag.taskId` is deliberately NOT
+// re-checked here — updateDragTarget's caller already returns before this is
+// ever reached for that case.
+function isValidReparentTarget(hoveredId) {
+  return canReparent(drag.tree, drag.taskId, hoveredId, drag.subtreeHeight);
+}
+
+// Step 11 (D5): the ancestors a DESCENDANT of the moved task gets after the
+// move — the dragged task's OLD ancestor prefix (root through the dragged
+// task's own old id) is sliced out of the descendant's existing chain and
+// replaced with the dragged task's NEW one; the tail (this descendant's own
+// nesting below the dragged task) carries over unchanged. `newDraggedAncestors`
+// is the dragged task's own new `ancestors` (root-first, not including
+// itself); this returns the descendant's full chain, dragged task included.
+// Pure, exported for direct verification (11d) — the one place D5's rewrite
+// math lives, called from performReparent for the real write.
+export function rewriteDescendantAncestors(newDraggedAncestors, draggedId, oldDraggedAncestors, oldDescendantAncestors) {
+  const tail = oldDescendantAncestors.slice(oldDraggedAncestors.length + 1);
+  return [...newDraggedAncestors, draggedId, ...tail];
+}
+
 // Re-evaluates the drop target on every pointermove. `document.elementFromPoint`
 // (not `event.target`) is used deliberately: pointer capture means
 // `event.target` stays pinned to the handle for the whole gesture, but what
 // we need here is whatever row is actually under the cursor right now.
+//
+// Step 11 (D2): each hovered row is split into three vertical zones — top
+// 25% ("before" this row, sibling-only), bottom 25% ("after" this row,
+// sibling-only), middle 50% ("reparent onto" this row, valid for ANY live
+// row that passes isValidReparentTarget, sibling or not).
 function updateDragTarget(event) {
   const elementUnderPointer = document.elementFromPoint(event.clientX, event.clientY);
   // `li[data-task-id]` never matches the drop indicator itself (it carries no
@@ -1113,25 +1232,38 @@ function updateDragTarget(event) {
     return;
   }
 
-  if (!drag.otherSiblingIds.includes(hoveredId)) {
-    // Siblings only (step 10's plan, product-spec.md's "manual dragging is
-    // the tie-breaker... within a priority level" rule that step 16 will
-    // build on) — re-parenting is step 11, not this one. An invalid position
-    // shows no indicator at all, so the drag never "appears to work" over a
-    // spot it can't actually land on.
-    drag.target = null;
-    hideDropIndicator();
+  const rect = hoveredLi.getBoundingClientRect();
+  const offsetY = event.clientY - rect.top;
+  const zone = offsetY < rect.height * 0.25 ? "before" : offsetY > rect.height * 0.75 ? "after" : "middle";
+
+  if (zone !== "middle" && drag.otherSiblingIds.includes(hoveredId)) {
+    // Sibling before/after edge (step 10's original behavior, now confined to
+    // the outer 25% bands instead of the whole row — see D2).
+    const before = zone === "before";
+    const idx = drag.otherSiblingIds.indexOf(hoveredId);
+    const beforeId = before ? (idx > 0 ? drag.otherSiblingIds[idx - 1] : null) : hoveredId;
+    const afterId = before ? hoveredId : (idx < drag.otherSiblingIds.length - 1 ? drag.otherSiblingIds[idx + 1] : null);
+
+    drag.target = { type: "sibling", beforeId, afterId };
+    hideReparentHighlight();
+    showDropIndicator(hoveredLi, before);
     return;
   }
 
-  const rect = hoveredLi.getBoundingClientRect();
-  const before = event.clientY < rect.top + rect.height / 2;
-  const idx = drag.otherSiblingIds.indexOf(hoveredId);
-  const beforeId = before ? (idx > 0 ? drag.otherSiblingIds[idx - 1] : null) : hoveredId;
-  const afterId = before ? hoveredId : (idx < drag.otherSiblingIds.length - 1 ? drag.otherSiblingIds[idx + 1] : null);
+  if (zone === "middle" && isValidReparentTarget(hoveredId)) {
+    drag.target = { type: "reparent", parentId: hoveredId };
+    hideDropIndicator();
+    showReparentHighlight(hoveredLi);
+    return;
+  }
 
-  drag.target = { beforeId, afterId };
-  showDropIndicator(hoveredLi, before);
+  // Neither a valid sibling edge (a non-sibling row's top/bottom 25%, per D2
+  // — edges are sibling-only) nor a valid reparent target (D3's refusals). No
+  // indicator of either kind, so the drag never "appears to work" over a spot
+  // it can't actually land on.
+  drag.target = null;
+  hideDropIndicator();
+  hideReparentHighlight();
 }
 
 // Computes the fractional-index `order` a task should get when dropped
@@ -1163,9 +1295,108 @@ export function computeReorderOrder(prevTask, nextTask) {
   return { renumber: false, order: (prevTask.order + nextTask.order) / 2 };
 }
 
+// Step 11 (D1): the shared reparent handler both the drag-drop reparent
+// target AND the "Move to top level" menu item (D9) route through — there is
+// no parallel implementation of either. `newParentId === null` means "move
+// to root" (D9's promote-to-root case, which drag can't express — there is
+// no row to drop onto for "no parent"); otherwise it's a drop onto another
+// task's row. Every refusal rule the drag's own `isValidReparentTarget`
+// already checked live gets re-checked here against a FRESH tree at write
+// time, not the drag-time snapshot — the same "never trust the click-time
+// copy" rule every mutation in this app follows (see enqueueMutation's own
+// comment in store.js): something else could have changed the tree in the
+// time it took this mutation to reach the front of the queue.
+async function performReparent(taskId, newParentId) {
+  await enqueueMutation(async () => {
+    const userId = getCurrentUserId();
+    const currentTask = getTasks().find((t) => t.id === taskId);
+    if (!userId || !currentTask || currentTask.deleted) return; // task gone or signed out
+
+    const newParentTask = newParentId != null ? getTasks().find((t) => t.id === newParentId) : null;
+    if (newParentId != null && (!newParentTask || newParentTask.deleted)) return; // target gone
+
+    // Full set, deleted included — same reasoning as the drag-time snapshot
+    // (see the `drag` doc comment above beginDrag).
+    const freshTree = buildTree(getTasks());
+
+    // D9's "move to root" has no hovered row for canReparent to validate
+    // against (there's nothing at newParentId === null in the tree), so it
+    // skips straight to the no-op check below; every other refusal in D3
+    // (cycle, no-op-onto-current-parent, depth cap) is exactly what
+    // canReparent already re-checks for a real target, against this fresh
+    // tree instead of the drag-time one.
+    if (newParentId != null) {
+      const subtreeHeight = computeSubtreeHeight(freshTree, taskId);
+      if (!canReparent(freshTree, taskId, newParentId, subtreeHeight)) {
+        // Distinguish "still too deep" (worth telling the user) from every
+        // other refusal (silently abandon — the target simply isn't there
+        // anymore, same as every other stale-data race in this app).
+        if (depthOf(freshTree, newParentId) + 1 + subtreeHeight > 6) {
+          alert("That would put a task too deep — subtasks can't go further than 7 levels.");
+        }
+        return;
+      }
+    } else if (currentTask.parentId === null) {
+      return; // D9: already at the root — nothing to promote
+    }
+
+    const descendantsFull = descendantIds(freshTree, taskId);
+
+    // D5/D6: the dragged task's new ancestors, and the inInbox the whole
+    // moved subtree now follows. A move to root (newParentTask null) leaves
+    // inInbox exactly as it was (D9) — there's no new parent to inherit from.
+    const newAncestors = newParentTask ? [...(newParentTask.ancestors || []), newParentTask.id] : [];
+    const newInInbox = newParentTask ? newParentTask.inInbox : currentTask.inInbox;
+    const oldAncestors = currentTask.ancestors || [];
+
+    // D7: top of the new parent's (or the root group's) live children.
+    // Reuses computeReorderOrder — step 10's existing top-of-group helper —
+    // rather than a second ordering rule: passing `prevTask: null` always
+    // takes its "top" branch (nextTask.order - 1000, or 0 when the group is
+    // empty), exactly D7's formula, and can never return `renumber: true`
+    // (that branch only ever fires between two non-null neighbours).
+    const newSiblings = sortTasks(
+      getTasks().filter((t) => !t.deleted && t.id !== taskId && t.parentId === newParentId)
+    );
+    const { order: newOrder } = computeReorderOrder(null, newSiblings.length > 0 ? newSiblings[0] : null);
+
+    try {
+      // D8: the dragged task first, then its descendants — mirrors step 8's
+      // cascade-delete write order exactly, one whole-document write each.
+      await saveTask(userId, {
+        ...currentTask,
+        parentId: newParentId,
+        ancestors: newAncestors,
+        inInbox: newInInbox,
+        order: newOrder,
+      });
+
+      for (const id of descendantsFull) {
+        // Re-read from the store at this write's turn, not a click-time
+        // snapshot (D8, same rule as the dragged task's own write above).
+        const current = getTasks().find((t) => t.id === id);
+        if (!current) continue; // gone by the time this write's turn came up
+        // D5: replace the dragged task's OLD ancestor prefix with its NEW
+        // one; parentId/order are untouched — only inInbox also follows (D6).
+        await saveTask(userId, {
+          ...current,
+          ancestors: rewriteDescendantAncestors(newAncestors, taskId, oldAncestors, current.ancestors || []),
+          inInbox: newInInbox,
+        });
+      }
+    } catch (error) {
+      console.error("Failed to move task:", error);
+      alert("Could not move the task. The list has been refreshed to show what actually saved.");
+    } finally {
+      await refreshTasks();
+    }
+  });
+}
+
 function finishDrag() {
   const { taskId, parentId, target } = drag;
   hideDropIndicator();
+  hideReparentHighlight();
   try {
     drag.handleEl.releasePointerCapture(drag.pointerId);
   } catch {
@@ -1175,6 +1406,14 @@ function finishDrag() {
   closeDragInteraction();
 
   if (!target) return; // no valid hover was ever registered — a no-op, never a "snap back"
+
+  // D1: finishDrag branches on target.type. The reparent branch routes
+  // through the exact same performReparent the "Move to top level" menu item
+  // uses (D9) — no parallel implementation.
+  if (target.type === "reparent") {
+    performReparent(taskId, target.parentId);
+    return;
+  }
 
   const { beforeId, afterId } = target;
 
@@ -1229,6 +1468,7 @@ function finishDrag() {
 function cancelDrag() {
   if (!drag) return;
   hideDropIndicator();
+  hideReparentHighlight();
   try {
     drag.handleEl.releasePointerCapture(drag.pointerId);
   } catch {
@@ -1324,6 +1564,7 @@ taskMenu.addEventListener("click", async (event) => {
 
   if (action === "add-subtask") await handleAddSubtaskClick(taskId);
   else if (action === "move-out") await handleMoveOutOfInboxClick(taskId);
+  else if (action === "move-to-top") await performReparent(taskId, null);
   else if (action === "delete") await handleDeleteClick(taskId);
 });
 

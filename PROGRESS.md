@@ -1,6 +1,6 @@
 # Progress
 
-Last updated: 2026-08-17 — **Steps 1–10 implemented.** Step 11 (drag-to-reparent)
+Last updated: 2026-08-17 — **Steps 1–11 implemented.** Step 12 (Focus/pin)
 is next. No signed-in browser walkthrough has been reported back for any step
 yet — the click-path below is still the first thing to run.
 
@@ -18,8 +18,8 @@ yet — the click-path below is still the first thing to run.
 | 8 | Context menu + cascade delete | done |
 | 9 | Trash | done |
 | 10 | Manual reorder | done |
-| 11 | Drag-to-reparent | next |
-| 12 | Focus / pin | planned |
+| 11 | Drag-to-reparent | done |
+| 12 | Focus / pin | next |
 | 13 | Dates | planned |
 | 14 | Tag colors | planned |
 | 15 | Quadrant mapping | planned |
@@ -30,55 +30,60 @@ yet — the click-path below is still the first thing to run.
 | 20 | Search — advanced | planned |
 | 21 | Export / import | planned |
 
-## Resume here — step 11 (drag-to-reparent)
+## Resume here — step 12 (Focus/pin)
 
-**Exact next action:** implement step 11, re-parenting by dragging a task onto
-another task (not just between siblings). What step 10 already leaves in place
-for it, and what it deliberately does not do:
+**Exact next action:** implement step 12, a "Focus" section that shows every
+pinned task, per product-spec.md §7:
 
-- **The pointer-drag scaffolding is already built and works for the sibling
-  case** — `beginDrag`/`updateDragTarget`/`finishDrag`/`cancelDrag` in app.js,
-  the interaction-guard usage (`beginInteraction()` held for the drag's whole
-  duration, released exactly once via `closeDragInteraction`'s idempotent
-  guard), pointer capture on the drag handle, and the shared, moved-not-rebuilt
-  `dropIndicator` element. Step 11 extends this same state machine; it does not
-  replace it. In particular, `pointerdown` on `.task-item__drag-handle` already
-  short-circuits before the long-press timer is ever scheduled (not just
-  cancelled) — step 11 inherits that for free, it needs no new suppression
-  logic of its own.
-- **The restriction step 11 must lift:** `updateDragTarget`'s
-  `drag.otherSiblingIds.includes(hoveredId)` check is what makes step 10
-  siblings-only. Step 11 needs a *second* kind of valid target — hovering over
-  the body of another task's row (not near its top/bottom edge) to reparent
-  onto it — alongside the existing before/after sibling targets, so `drag.target`
-  needs a discriminated shape (e.g. `{ type: 'sibling', beforeId, afterId }` vs
-  `{ type: 'reparent', parentId }`) rather than the current bare
-  `{ beforeId, afterId }`.
-- **What step 11 must add that step 10 has no need for:**
-  - **Recompute `ancestors` for the whole moved subtree, not just the dragged
-    task.** `ancestors` is root-first and cached (step 4's decision) — moving a
-    task to a new parent changes every one of its descendants' `ancestors`
-    too, since each entry's chain now runs through a different parent. This is
-    the one place a "single document write" reorder rule does not hold: a
-    reparent of a task with N live descendants is N+1 writes (mirroring step 8's
-    "each deleted document is its own write" precedent, for the same
-    reason — the 7-level cap and cascade delete/complete both read `ancestors`
-    /`parentId` per-document, so every moved document must carry a correct,
-    self-contained copy).
-  - **Refuse a drop into the task's own descendant.** Dragging a parent onto
-    one of its own children must not be allowed to reparent it there (it would
-    disconnect the tree into a cycle). `taskTree.js`'s `descendantIds` is the
-    check: before accepting a reparent target, confirm the hovered task's id is
-    not in `descendantIds(tree, draggedTaskId)`. Symmetric to `buildTree`'s own
-    self-parent guard, but this one has to run *before* the write, as a refused
-    drop (no indicator, no write — same "never appear to work and snap back"
-    rule step 10 already established for an invalid sibling target), not as a
-    defensive guard against corrupt data after the fact.
-  - **The 7-level cap applies to the whole moved subtree, not just the dragged
-    task.** `depthOf(tree, newParentId) + 1 + (depth of the dragged task's
-    deepest live descendant below it)` must stay `<= 6`; today's `depthOf`
-    check (step 4) only ever validates a single new task being added, never an
-    existing subtree being relocated deeper.
+- **No cap** on how many tasks can be pinned — pinning/unpinning is entirely
+  the user's call, and the app must never block a pin or silently drop one.
+- **Pinned tasks appear in Focus in the same order they hold in the main
+  list** — Focus carries no ordering of its own to maintain, so it is a
+  *filtered view* over the same `order` values the main list already sorts
+  by, not a second list with its own sequence.
+- **A pinned task that gets completed disappears from Focus** — the section
+  is "what's left to do," not a record of what was. This mirrors the existing
+  "completed tasks hide unless 'show completed' is on" filter (step 1); Focus
+  most likely needs the exact same completed-filter applied on top of the
+  pinned filter, not a separate rule.
+
+**What already exists for this step to build on:**
+- **The `pinned: bool` field is already in the schema, written on every
+  task, always `false`** — see `taskService.js`'s `addTask`/`normalizeTask`
+  and `firestore.rules`' `isValidTask()` (step 1's decision, confirmed still
+  correct by FIREBASE.md's schema table). No migration is needed; step 12 is
+  the first thing to ever write `true`.
+- **The Trash and Inbox precedent for "a third rendered collection alongside
+  the existing two"**: step 9 added `#trash-view`/`renderTrash` as a second
+  screen (view-switch, not a third simultaneous container); step 5 added the
+  Inbox as a second *simultaneous* container sharing one `entriesByTaskId`
+  Map and one `renderTasks` call (see step 5's Decisions entries below). Focus
+  is closer to step 5's shape than step 9's — it renders *alongside* the main
+  list/Inbox (all visible at once), not as a separate screen you navigate to —
+  so the likely design is a third `{ element, tasks, visibleIds }` entry in
+  `renderMainView`'s `renderTasks` call, reusing the *same* `<li>` a task
+  already has elsewhere (a task can be simultaneously "in Focus" and "in the
+  main list" — pinning doesn't remove it from where it already lives, unlike
+  filing out of the Inbox which does). That breaks step 5's "one task id maps
+  to exactly one `<li>`" invariant on purpose — Focus is the first place in
+  this app a task is meant to render in **two** places at once, which
+  `entriesByTaskId`'s current one-entry-per-id shape does not support. This is
+  the central design question step 12 has to answer before writing any code:
+  either give Focus rows their own separate, second Map (parallel to
+  `trashEntriesByTaskId`'s precedent, not `entriesByTaskId`'s), or find another
+  way to reuse a `<li>` in two containers at once (moving it back and forth
+  per render would fight the main list for ownership of the same node).
+- **Toggling `pinned` is a whole-document `saveTask`, routed through
+  `enqueueMutation`, exactly like every other field-level mutation** (title,
+  note, `completed`, `inInbox`) — there is no reason to expect this one to
+  need special handling; the interesting work is entirely on the render side.
+
+**Files likely touched:** `public/index.html` (a `#focus-section`/`#focus-list`,
+and a pin toggle control per row — a button or checkbox, TBD), `public/render.js`
+(the second-Map-or-shared-node decision above, plus whatever toggles the pin
+control's visual state), `public/app.js` (a `handlePinToggleClick` mirroring
+`handleMoveOutOfInboxClick`'s shape, and wiring the new container into
+`renderMainView`).
 
 **No step has been confirmed in a signed-in browser yet.** Everything below marked
 "verified" was verified unsigned-in, by driving the real modules with synthetic
@@ -129,6 +134,17 @@ a bogus `does not provide an export named ...` error and cost real time once alr
     Press Escape mid-drag → the drag cancels and nothing moves. Press and hold the
     drag handle for over half a second without moving → the context menu must NOT
     open (only a plain right-click or long-press *off* the handle opens it).
+12. Drag a task by its handle and hover the *middle* of an unrelated task's row
+    (not its top/bottom edge) → an orange outline highlights that row instead of
+    the thin blue insertion line; drop it there → the dragged task (and its whole
+    subtree) becomes a child of that row, filed under it in the tree, and — if the
+    target is in the Inbox or out of it — the whole subtree's Inbox membership
+    follows the target. Try hovering the middle of the dragged task's own
+    descendant, or its current parent → no highlight ever appears, no matter where
+    you release. Right-click a task that has a parent → "Move to top level" appears
+    in the menu (absent for a task with no parent); choosing it promotes the task
+    (and its subtree) to the root of the main list, keeping its Inbox membership
+    exactly as it was.
 
 **Files touched (steps 1–4):**
 - `public/taskService.js` — renamed from `todoService.js`; `addTask`, `fetchTasks`,
@@ -162,6 +178,26 @@ a bogus `does not provide an export named ...` error and cost real time once alr
 - `public/index.html` — `#trash-view`/`#trash-btn`/`#trash-back-btn`/`#trash-list`
   /`#trash-count`; `.task-item__drag-handle` and `.drop-indicator` styling
   (`touch-action: none` on the handle is load-bearing, not decorative).
+
+**Files touched (step 11):**
+- `public/app.js` — `drag.target`'s discriminated shape (`{ type: 'sibling', ... }`
+  / `{ type: 'reparent', parentId }`); `updateDragTarget`'s three-zone hit test
+  (top/bottom 25% sibling-only, middle 50% reparent-onto-anything-valid);
+  `isValidReparentTarget` (live-drag wrapper) plus the pure, exported
+  `canReparent`/`computeSubtreeHeight`/`rewriteDescendantAncestors` (D3/D4/D5,
+  verification-only exports, same precedent as `computeReorderOrder`); the
+  shared `performReparent` handler both the drop and the new "Move to top
+  level" menu item route through; `showReparentHighlight`/`hideReparentHighlight`
+  for the middle-zone row highlight; `beginDrag`'s tree/descendant-set/subtree-
+  height snapshot; the `taskMenuMoveToTopItem` visibility toggle and its
+  `move-to-top` dispatch branch.
+- `public/index.html` — the `.task-item--reparent-target` outline style (an
+  `outline`, not a `border`, so it never shifts the row's own height and moves
+  the 25/50/25 zone boundaries out from under the next pointermove); the "Move
+  to top level" menu button.
+- `FIREBASE.md` — `parentId`/`ancestors`/`order`/`inInbox` rows corrected to
+  note step 11 also writes them (previously documented as create-time-only or
+  step-10-only).
 
 **Verified (actually exercised in a real browser at localhost:5050, unsigned-in, by
 driving the real modules directly):**
@@ -324,6 +360,77 @@ driving the real modules directly):**
   real checkbox still reaches the delegated `change` listener without the new
   drag-handle markup breaking it. `grep -rn "deleteDoc" public/*.js` confirms
   `purgeTask` is still the only call site.
+- **Step 11 (drag-to-reparent), verified unsigned-in via real `pointerdown`/
+  `pointermove`/`contextmenu`/`click` `PointerEvent`/`MouseEvent`s dispatched on
+  the actual rendered `<li>`s and drag handles (a separate tool call per event),
+  plus direct calls to the real exported `canReparent`/`computeSubtreeHeight`/
+  `rewriteDescendantAncestors`/`computeReorderOrder` against `taskTree.js`'s
+  real `buildTree`/`descendantIds`/`depthOf`:**
+  - **11a** — dragging D and hovering the middle of Q (an unrelated root task,
+    not a sibling) showed the `.task-item--reparent-target` highlight with no
+    line indicator; hovering Q's top-25% edge showed neither. Re-verified with
+    a rigor pass: starting from a known-highlighted baseline (a real sibling,
+    S) and moving to Q, `document.elementFromPoint` genuinely resolved to Q
+    (not null/stale), S's highlight genuinely cleared, and Q's genuinely
+    appeared — ruling out a false pass from an early-return no-op.
+  - **11b** — hovering the middle of D's own descendants C1 (depth 1 below D)
+    and C2 (depth 2 below D) showed no highlight at either depth, with the
+    same before/after-a-known-baseline rigor check as 11a (the highlight
+    genuinely left S and genuinely failed to land on C1/C2, `elementFromPoint`
+    confirmed resolving to each).
+  - **11c** — hovering the middle of D's current parent P showed no highlight,
+    same rigor check applied (highlight genuinely left S, genuinely failed to
+    land on P).
+  - **11d** — `rewriteDescendantAncestors` on a synthetic A(root)>B>C chain
+    moved under D(root) returned the full arrays exactly:
+    `A: ["D"]`, `B: ["D","A"]`, `C: ["D","A","B"]`.
+  - **11e** — a 5-level chain L0..L4 (L4 at depth 4) plus a separate 3-tall
+    dragged subtree DR>DC1>DC2 (`computeSubtreeHeight` returned `2`):
+    `canReparent(tree, "DR", "L4", 2)` refused (`4+1+2=7>6`);
+    `canReparent(tree, "DR", "L3", 2)` accepted (`3+1+2=6<=6`) — both
+    directions proven against the real `depthOf`.
+  - **11f** — same chain with DC2 (the deepest node) marked `deleted: true`:
+    building the tree from the FULL set (deleted included, matching
+    `beginDrag`/`performReparent`'s real `buildTree(getTasks())` call) kept
+    `computeSubtreeHeight` at `2` and still refused L4. Contrast case proving
+    the counting actually matters: building the tree from a `!deleted`-filtered
+    set instead dropped the height to `1` and would have wrongly *accepted*
+    the same drop (`4+1+1=6<=6`) — confirming D4 requires the full set, not
+    just that the code runs.
+  - **11g** — a harness replicating `performReparent`'s exact decision lines
+    (the extracted `canReparent`/`computeSubtreeHeight`/
+    `rewriteDescendantAncestors` calls, plus the same one-line
+    `newInInbox = newParentTask ? newParentTask.inInbox : draggedTask.inInbox`
+    expression the real function uses) proved both directions: a main-list
+    task K with child K1 (`inInbox: false`) moved under an Inbox parent
+    produced `draggedNewInInbox: true` and `K1: { inInbox: true }`; an Inbox
+    task J with child J1 moved under a main-list parent produced
+    `draggedNewInInbox: false` and `J1: { inInbox: false }`.
+  - **11h** — dragging D, hovering Q's middle (valid target, highlight shown),
+    with a sentinel `beginInteraction()` held alongside the drag's own (depth
+    2): Escape dropped depth to exactly 1, not 0 (no double decrement,
+    sentinel's own interaction survived), the highlight and indicator were
+    both gone, and D's `parentId`/`order` in the store were unchanged
+    (`"P"`/`1000`) — no write was even attempted (unsigned-in `saveTask` is
+    unreachable; see the Assumed note below).
+  - **11i** — a real `contextmenu` on C1 (has a parent) showed "Move to top
+    level" (`display: "block"`); the same on Q (a root task) showed it hidden
+    (`display: "none"`). Clicking it on C1 while unsigned-in produced no
+    console error and left C1's `parentId`/`ancestors` in the store completely
+    unchanged (`"D"`/`["P","D"]`) — proving `performReparent`'s
+    `if (!userId...) return` genuinely aborts before any write is attempted,
+    not just reasoned about. The D9 write values themselves were verified with
+    the same 11g-style harness (`newParentId: null`): dragged task
+    `ancestors: []`, descendant K1 correctly rewritten to `["K"]`.
+  - Regression: a real sibling drag (S, a sibling of D) still showed the line
+    indicator on its top-25% edge and correctly switched to the
+    `.task-item--reparent-target` highlight (not the line) on its middle 50% —
+    step 10's sibling behavior survives the new three-zone split, and a
+    sibling is a legitimate reparent target too, per D2/D3 (nothing in the
+    refusal rules exempts siblings).
+  - Console had zero new errors across the whole step-11 run (one pre-existing
+    stale error from the module-caching issue this session's setup hit and
+    fixed — see below — was the only line in the log throughout).
 
 **Assumed (written and reasoned about, never exercised signed-in):**
 - Every path that actually reaches Firestore: create, save, soft-delete, and the
@@ -372,6 +479,42 @@ driving the real modules directly):**
   separate real facts (the correct `order` value is computed; applying that
   value makes the real render pipeline sort correctly), stitched together by
   reasoning, not observed as one unbroken signed-in gesture.
+- **Every real Firestore call step 11 adds.** No `saveTask` call inside
+  `performReparent`'s actual `enqueueMutation` body has been run against
+  Firestore — this session deliberately never set a fake signed-in uid (the
+  one prior stray fake-uid write noted above is exactly the mistake this
+  session avoided repeating). What was verified instead: the exact *target
+  selection and refusal* logic (`canReparent`/`computeSubtreeHeight`) and the
+  exact *ancestors-rewrite and order* math (`rewriteDescendantAncestors`,
+  `computeReorderOrder`) against synthetic data via their real exported
+  functions, the real DOM/highlight behavior of a live drag and of the "Move
+  to top level" menu item, and — for both — that staying unsigned-in makes
+  `performReparent`'s `if (!userId...) return` genuinely unreachable-past
+  rather than merely assumed safe. Whether an actual reparent write (dragged
+  task doc plus every descendant doc) round-trips correctly through Firestore,
+  and whether `refreshTasks`'s refetch then renders the moved subtree in its
+  new place end-to-end, is unverified — same limitation as every other write
+  path above.
+- **This session's own setup hit the exact stale-module-cache trap this
+  document already warns about** (see "Hard-reload the page" above), one
+  level worse: a *page-level* hard reload (Cmd+Shift+R) was not enough to
+  force fresh subresources for a `<script type="module">` graph — the
+  document was a genuine fresh navigation (`performance.getEntriesByType(
+  "navigation")[0].type === "navigate"`), yet `import('/app.js')` inside it
+  still returned the previous version's exports, and a second attempt against
+  a *freshly restarted* dev server on a *brand-new* browser tab still failed
+  with `store.js does not provide an export named 'enqueueMutation'` — proving
+  the staleness lives in the browser's shared HTTP cache (keyed by URL, not
+  by tab or server process) rather than in any one page or server instance.
+  What actually worked: explicitly `fetch(url, { cache: "reload" })`-priming
+  every module file's disk-cache entry (app.js, auth.js, taskService.js,
+  store.js, taskTree.js, render.js, and index.html itself) *before* the real
+  navigation that loads them. The stale error line from the failed attempt
+  stays visible in `read_console_messages` for the rest of the tab's life
+  (that tool returns full history, with no way shown to clear it) — it is
+  **not** evidence of a live defect once a later, successful navigation's own
+  checks (dynamic-import exports, DOM state, interaction depth) all read
+  correctly afterward.
 
 ## Decisions
 
@@ -618,6 +761,85 @@ driving the real modules directly):**
   neighbour would make their relative order silently non-deterministic (whatever
   the JS engine's sort happens to do with ties) instead of reflecting the last
   drag the user actually did.
+- **step 11 (D1)** — `drag.target` became a discriminated shape,
+  `{ type: 'sibling', beforeId, afterId }` or `{ type: 'reparent', parentId }`,
+  and `finishDrag`/`performReparent` branch on `type` rather than inferring it
+  from which fields are present — any later step that adds a third kind of
+  drop target (there is none planned, but step 16's priority-overruled-drag
+  case is adjacent) extends this same `type` enum instead of overloading the
+  existing two shapes.
+- **step 11 (D2)** — each hovered row splits into three vertical zones: top
+  25% and bottom 25% are sibling-only before/after targets (step 10's
+  original behavior, now confined to a smaller band instead of the whole
+  row), and the middle 50% is "reparent onto this row," valid for **any** live
+  row that passes D3 — sibling or not. A row's own middle being a legitimate
+  reparent target even for a sibling is deliberate: nothing in D3's refusal
+  rules exempts siblings, and reparenting onto a former sibling is exactly as
+  valid as reparenting onto anything else. Any later step that changes row
+  height or padding must keep the zone split proportional (`rect.height *
+  0.25`/`0.75`), not a fixed pixel band, or the split silently stops matching
+  a visually-centered highlight.
+- **step 11 (D3)** — the four reparent refusals (dropping onto self,
+  descendant, current parent, or past the depth cap) live in exactly **one**
+  place, the pure exported `canReparent(tree, draggedId, newParentId,
+  subtreeHeight)` — the live drag's `isValidReparentTarget` and
+  `performReparent`'s write-time re-check both call it, rather than each
+  re-implementing the same four checks and risking them drifting apart. Any
+  later step that adds a fifth refusal rule (none planned) extends this one
+  function, not either caller.
+- **step 11 (D4)** — the 7-level cap for a reparent is `depthOf(tree,
+  newParentId) + 1 + subtreeHeight <= 6`, where `subtreeHeight` (the pure
+  exported `computeSubtreeHeight`) is computed over the tree built from the
+  **full** task set — deleted descendants included, exactly like step 8's
+  cascade-delete walk (PROGRESS.md's step 8 decision) and for the same
+  reason: a deleted descendant is restorable, and `firestore.rules`' `
+  ancestors.size() <= 6` would reject a write for it the moment it's
+  restored into a subtree moved too deep while it was gone. Verified live
+  (11f) that filtering deleted tasks out first — the wrong way — actually
+  changes the accept/refuse answer, not just the code path taken.
+- **step 11 (D5)** — a reparent rewrites `ancestors` for the dragged task
+  **and every descendant, deleted ones included** — one whole-document
+  `saveTask` per document, mirroring step 8's "each deleted document is its
+  own write" precedent for the identical reason (per-document cascade/cap
+  logic needs every document self-contained). The rewrite formula — replace
+  the dragged task's OLD ancestor prefix in each descendant's chain with its
+  NEW one, keep the tail below the dragged task unchanged — lives in the one
+  pure exported `rewriteDescendantAncestors`, called from `performReparent`
+  for the real write and directly from the verification harness for 11d/11g/
+  11i; there is no second copy of this math anywhere.
+- **step 11 (D6)** — `inInbox` follows the new parent for the **whole** moved
+  subtree (dragged task and every descendant), reusing step 5's "a subtree
+  can't straddle the Inbox boundary" rule (PROGRESS.md's step 5 decision) at
+  move time instead of only at creation time. The one exception is "Move to
+  top level" (D9): there is no new parent to inherit from, so `inInbox` is
+  left exactly as it was.
+- **step 11 (D7)** — a reparented task lands at the top of its new parent's
+  live children, reusing step 10's `computeReorderOrder(null, topSibling)`
+  rather than a second ordering rule — passing `prevTask: null` always takes
+  its existing "top of group" branch (`nextTask.order - 1000`, or `0` with no
+  siblings), which is exactly D7's formula and can never trigger the
+  precision-renumber branch (that only ever fires between two non-null
+  neighbours). Any later step that changes "top of group" math (step 16's
+  quadrant-first comparator is the obvious candidate) only has to change it in
+  `computeReorderOrder` — every caller, including this one, inherits it.
+- **step 11 (D8)** — write order and failure handling mirror step 8 exactly:
+  the dragged task's own `saveTask` first, then one `saveTask` per descendant
+  (re-read from `getTasks()` at that write's turn, not a click-time snapshot),
+  the whole thing one `enqueueMutation`, a `catch` that logs/alerts, and a
+  `finally` that calls `refreshTasks()` regardless of how far the loop got —
+  same reasoning as step 8's: a mid-cascade failure leaves the earlier writes
+  committed, and the refresh shows the true partial state rather than
+  pretending nothing happened.
+- **step 11 (D9)** — the context menu gained exactly one new item, "Move to
+  top level," shown only when `parentId != null`, routing through the exact
+  same `performReparent` the drag-drop path uses (`newParentId: null`) — not
+  a parallel implementation. It sets `parentId: null`, `ancestors: []`, and
+  leaves `inInbox` unchanged (there is no new parent to inherit from); D5's
+  descendant rewrite runs the same way, with `newAncestors = []`. **A full
+  move-target picker (search/browse for any task, not just drag-reachable
+  ones or the root) is explicitly out of scope for this step** — this item
+  only covers the one case drag structurally cannot express (there is no row
+  to drop onto for "no parent").
 
 ## Open items (not steps)
 

@@ -154,7 +154,7 @@ Each task document:
 | `colors.foreground` | string | Hex; app.js currently sends `#ffffff` |
 | `colors.background` | string | Hex; app.js currently sends `#10b981` |
 | `createdAt` | timestamp | `serverTimestamp()` |
-| `dueDate` | timestamp \| null | Accepted by `addTask`, not yet supplied by the UI |
+| `dueDate` | timestamp \| null | Step 13 (Dates): a Firestore Timestamp at **local midnight** of the due day, or `null`. Set/cleared inline (click the row's due-date display, or the context menu's "Set/Change due date"), committed via whole-document `saveTask` on blur — never `updateDoc`. Parsed from the `<input type="date">`'s `"YYYY-MM-DD"` value with `new Date(year, month-1, day)` (never the string form of `new Date(...)`, which parses as UTC and lands a day early west of Greenwich); read back the same way in reverse. Read by the Overdue screen (`isOverdueTask`, render.js): overdue iff the due date's local calendar day is strictly before today's — due today is not overdue. Never mentioned by `isValidTask()`, so no rules change was needed |
 
 Reads use `query(..., orderBy("createdAt", "desc"))` — a single-field sort, served
 by the automatic index. That is why [firestore.indexes.json](firestore.indexes.json)
@@ -281,5 +281,6 @@ The rules command only works once the `firestore` block from §7 is added to
    `new 106`. Everything under `public/` is deployed and publicly served, so these
    ship to production as-is. Delete them or move them out of `public/`.
 6. **No emulator config**, so all local work hits production data.
-7. **Unused document fields** (`parentTaskId`, `dueDate`, `completed` toggle) — the
-   schema anticipates hierarchy, due dates and completion, but no UI reaches them.
+7. **Unused document fields** (`parentTaskId`, `completed` toggle) — the schema
+   anticipates hierarchy and completion, but no UI reaches these two. (`dueDate`
+   is no longer in this list — step 13 wired it up; see the schema table above.)

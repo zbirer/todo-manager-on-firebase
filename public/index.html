@@ -141,6 +141,38 @@
       background-color: rgba(255, 255, 255, 0.15);
       resize: vertical;
     }
+    /* Step 13 (Dates): the due-date + age row, same full-width/indented
+       pattern as the note row above, one line below it. */
+    .task-item__meta {
+      flex-basis: 100%;
+      margin-left: 28px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      opacity: 0.85;
+    }
+    .task-item__due-display {
+      cursor: text;
+    }
+    /* D3: overdue is a distinct, attention-getting state — never applied to
+       a task due today or in the future (isOverdueTask, render.js). */
+    .task-item__due-display--overdue {
+      color: #fca5a5;
+      font-weight: 600;
+    }
+    .task-item__due-input {
+      font-size: 12px;
+      padding: 2px 4px;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      color: inherit;
+      background-color: rgba(255, 255, 255, 0.15);
+    }
+    .task-item__age {
+      opacity: 0.75;
+    }
     /* All per-row action buttons live in one wrapper so pushing the whole
        group to the right (margin-left: auto) never depends on which
        individual buttons happen to be visible — render.js toggles buttons
@@ -316,6 +348,28 @@
       color: white;
       margin-bottom: 8px;
     }
+    /* Step 13 (Dates, D4): the Overdue screen — a third view panel, styled
+       like Trash's (same button color language) since it's the same kind of
+       "step out of the main view into a dedicated screen" pattern. */
+    #overdue-view h2 {
+      font-size: 16px;
+      margin-bottom: 4px;
+    }
+    #overdue-count {
+      font-size: 13px;
+      color: #6b7280;
+      margin: 4px 0 12px;
+    }
+    #overdue-btn {
+      background-color: #b45309;
+      color: white;
+      margin: 8px 0;
+    }
+    #overdue-back-btn {
+      background-color: #6b7280;
+      color: white;
+      margin-bottom: 8px;
+    }
   </style>
 </head>
 <body>
@@ -350,6 +404,10 @@
         Show completed
       </label>
       <button type="button" id="trash-btn">Trash</button>
+      <!-- Step 13 (D1/D4): opens the Overdue screen — see #overdue-view
+           below for why this is a separate VIEW (Trash's precedent), not a
+           section folded into this main view the way Focus is. -->
+      <button type="button" id="overdue-btn">Overdue</button>
 
       <!-- Step 12 (D1/D8): Focus — pinned tasks, hand-picked (D2: flat, no
            subtree pulled in), sorted by the same comparator as the main list
@@ -389,6 +447,24 @@
       <p id="trash-count"></p>
       <ul id="trash-list"></ul>
     </div>
+
+    <!-- Step 13 (D1/D4): the Overdue screen — a SCREEN following #trash-view's
+         exact precedent above (a currentView value + app.js's dispatch
+         table), deliberately NOT a section folded into #main-view the way
+         #focus-section is. Rows are flat and full-width (render.js's
+         renderOverdue reuses the exact same createTaskElement/
+         updateTaskElement pipeline the main list and Focus use — checkbox,
+         title/note/due-date inline edit, drag handle, buttons — never
+         #trash-view's simpler label-plus-button shape), never a tree, and
+         never pull in a non-overdue parent or child (D4). Nested inside
+         #task-section for the same reason #trash-view is: sharing its
+         existing delegated listeners instead of needing a second set. -->
+    <div id="overdue-view" hidden>
+      <button type="button" id="overdue-back-btn">← Back</button>
+      <h2>Overdue</h2>
+      <p id="overdue-count"></p>
+      <ul id="overdue-list"></ul>
+    </div>
   </div>
 
   <!-- Step 8: the task context menu (right-click or long-press on a row).
@@ -416,6 +492,13 @@
          handleTogglePinClick/enqueueMutation-wrapped saveTask, not a
          parallel implementation. -->
     <button type="button" class="task-menu__item" data-action="toggle-pin">Pin to Focus</button>
+    <!-- Step 13 (D10): "Set due date"/"Change due date" opens the inline
+         `<input type="date">` editor on the row the menu was opened for
+         (app.js's openTaskMenuForTask sets both the label and
+         taskMenu.dataset.context per open). "Clear due date" is a one-shot
+         write with no editor step, shown only when task.dueDate is set. -->
+    <button type="button" class="task-menu__item" data-action="edit-due-date">Set due date</button>
+    <button type="button" class="task-menu__item" data-action="clear-due-date">Clear due date</button>
     <button type="button" class="task-menu__item task-menu__item--danger" data-action="delete">Delete</button>
   </div>
 

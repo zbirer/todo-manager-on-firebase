@@ -32,13 +32,20 @@ import {
 import {
   renderTasks,
   renderTrash,
+  renderOverdue,
   sortTasks,
-  // Issue 2 fix: each of these takes a row-context ("main" or "focus" today
-  // — see render.js's CONTEXT_MAPS) as its second argument, addressing
-  // specifically the row the user actually interacted with. A pinned task
-  // renders in Focus AND its normal place at once (step 12, D1/D4) — two
-  // independent <li>s, two independent edit states — so a bare taskId alone
-  // can no longer identify "the entry" on its own.
+  // Step 13 (D5): the one shared ordering mechanism Focus and Overdue both
+  // sort by — see render.js's own comment on why this is exported rather
+  // than left inline inside renderTasks.
+  computeMainListOrderIndex,
+  // Issue 2 fix: each of these takes a row-context ("main", "focus", or
+  // (step 13) "overdue" — see render.js's CONTEXT_MAPS) as its second
+  // argument, addressing specifically the row the user actually interacted
+  // with. A pinned task renders in Focus AND its normal place at once (step
+  // 12, D1/D4), and an overdue task renders on the separate Overdue screen
+  // too (step 13) — up to three independent <li>s, three independent edit
+  // states, so a bare taskId alone can no longer identify "the entry" on its
+  // own.
   beginTitleEdit,
   endTitleEdit,
   getTitleInputValue,
@@ -47,6 +54,19 @@ import {
   endNoteEdit,
   getNoteInputValue,
   setNoteInputValue,
+  beginDueDateEdit,
+  endDueDateEdit,
+  getDueDateInputValue,
+  setDueDateInputValue,
+  // Step 13 (D2): the one place both halves of the local-midnight
+  // date<->input conversion live — see render.js's own comments on each for
+  // why the naive string-based approaches are wrong.
+  parseDateInputToLocalMidnight,
+  formatDateForInput,
+  // Step 13 (D3): the one predicate for "is this task overdue" — shared by
+  // the Overdue screen's own filter below and render.js's per-row display
+  // styling, never a second copy.
+  isOverdueTask,
 } from "./render.js";
 
 // Mirrors firestore.rules' isValidTask() caps. Checked here, client-side,
@@ -99,6 +119,25 @@ function parseTags(title) {
 // different, still-open edit's interaction out from under it.
 const openEdits = new Set();
 
+// Step 13 extends step 12's D1/D4 disambiguation from two row-contexts to
+// three: a task can now render on its normal-place row, its Focus row, AND
+// (on the separate Overdue screen) its Overdue row, each an independent
+// <li> with independent edit state (render.js's CONTEXT_MAPS). Every place
+// that used to branch on a boolean `isFocusRow` now calls this instead, so
+// there is exactly one row-context lookup, not one per call site drifting
+// independently as a third context got bolted on.
+function contextForRow(li) {
+  if (li?.closest("#focus-list")) return "focus";
+  if (li?.closest("#overdue-list")) return "overdue";
+  return "main";
+}
+// The openEdits/onEditCancelled field suffix a given context uses — "" for
+// the normal-place row (unchanged since step 2, so existing keys/behavior
+// for plain tasks stay byte-identical), ":focus"/":overdue" otherwise.
+function fieldSuffixForContext(context) {
+  return context === "main" ? "" : `:${context}`;
+}
+
 function beginEdit(taskId, field) {
   openEdits.add(`${taskId}:${field}`);
   beginInteraction();
@@ -127,6 +166,12 @@ const taskMenuMoveToTopItem = taskMenu.querySelector('[data-action="move-to-top"
 // Step 12 (D7): hidden for a completed task, label toggles per current
 // `pinned` state — see openTaskMenuForTask below.
 const taskMenuTogglePinItem = taskMenu.querySelector('[data-action="toggle-pin"]');
+// Step 13 (D10): "Set due date"/"Change due date" always opens the inline
+// editor (label toggles per whether a due date is already set); "Clear due
+// date" is shown only when there's actually something to clear — see
+// openTaskMenuForTask below.
+const taskMenuEditDueDateItem = taskMenu.querySelector('[data-action="edit-due-date"]');
+const taskMenuClearDueDateItem = taskMenu.querySelector('[data-action="clear-due-date"]');
 
 // Step 12 (D1/D8): the Focus section/list — a third container rendered
 // alongside Inbox/main from the same renderTasks call (render.js), hidden
@@ -135,12 +180,19 @@ const focusSection = document.getElementById("focus-section");
 const focusList = document.getElementById("focus-list");
 
 // Step 9: the two view panels and the buttons that switch between them.
+// Step 13 (D4) adds a third — Overdue — following this exact precedent
+// rather than step 12's in-main-view Focus section.
 const mainView = document.getElementById("main-view");
 const trashView = document.getElementById("trash-view");
 const trashBtn = document.getElementById("trash-btn");
 const trashBackBtn = document.getElementById("trash-back-btn");
 const trashCountText = document.getElementById("trash-count");
 const trashList = document.getElementById("trash-list");
+const overdueView = document.getElementById("overdue-view");
+const overdueBtn = document.getElementById("overdue-btn");
+const overdueBackBtn = document.getElementById("overdue-back-btn");
+const overdueCountText = document.getElementById("overdue-count");
+const overdueList = document.getElementById("overdue-list");
 
 // 1b. Task context menu (step 8) — right-click or long-press on a row.
 // `taskMenu` is one shared element (declared in index.html, outside both
@@ -185,6 +237,7 @@ function closeTaskMenu() {
   menuOpen = false;
   taskMenu.hidden = true;
   delete taskMenu.dataset.taskId;
+  delete taskMenu.dataset.context;
   endInteraction();
 }
 
@@ -192,7 +245,13 @@ function closeTaskMenu() {
 // it never renders partly off-screen. Closes any menu already open first —
 // idempotent-safe and it means there is only ever one open interaction to
 // account for, never two stacked from a stray second open.
-function openTaskMenuForTask(taskId, x, y) {
+//
+// `context` (step 13) is which of render.js's CONTEXT_MAPS the row the menu
+// was opened FOR belongs to ("main", "focus", or "overdue") — stashed on the
+// menu's own dataset (mirroring `taskId`) so "Set due date" can later open
+// the inline editor on the correct one of a task's up-to-three independent
+// rows, the same disambiguation the click-to-edit listener already needs.
+function openTaskMenuForTask(taskId, x, y, context = "main") {
   const task = getTasks().find((t) => t.id === taskId);
   if (!task || task.deleted) return;
 
@@ -211,7 +270,13 @@ function openTaskMenuForTask(taskId, x, y) {
   // task's CURRENT pinned state at open time.
   taskMenuTogglePinItem.style.display = task.completed ? "none" : "";
   taskMenuTogglePinItem.textContent = task.pinned ? "Unpin from Focus" : "Pin to Focus";
+  // Step 13 (D10): due-date items. Editing (opening the inline row editor) is
+  // always offered, labeled per whether a due date already exists; clearing
+  // is offered only when there's actually a value to clear.
+  taskMenuEditDueDateItem.textContent = task.dueDate ? "Change due date" : "Set due date";
+  taskMenuClearDueDateItem.style.display = task.dueDate ? "" : "none";
   taskMenu.dataset.taskId = taskId;
+  taskMenu.dataset.context = context;
   taskMenu.hidden = false;
 
   // Measured AFTER un-hiding — a `hidden` element has no box to measure.
@@ -238,20 +303,28 @@ let currentView = "main";
 const views = {
   main: renderMainView,
   trash: renderTrashView,
+  // Step 13 (D1/D4): the Overdue screen — a THIRD panel, following this
+  // exact Trash precedent (a currentView entry + the dispatch table) rather
+  // than step 12's in-main-view Focus section.
+  overdue: renderOverdueView,
 };
 
-// Switches which of the two panels is visible and renders it fresh. Used by
-// the Trash/Back buttons below and by sign-out (which must not leave the
-// Trash panel showing under a "please sign in" message for the next user).
+// Switches which of the three panels is visible and renders it fresh. Used
+// by the Trash/Overdue/Back buttons below and by sign-out (which must not
+// leave a non-main panel showing under a "please sign in" message for the
+// next user).
 function switchView(view) {
   currentView = view;
   mainView.hidden = view !== "main";
   trashView.hidden = view !== "trash";
+  overdueView.hidden = view !== "overdue";
   views[view]();
 }
 
 trashBtn.addEventListener("click", () => switchView("trash"));
 trashBackBtn.addEventListener("click", () => switchView("main"));
+overdueBtn.addEventListener("click", () => switchView("overdue"));
+overdueBackBtn.addEventListener("click", () => switchView("main"));
 
 function renderMainView() {
   const showCompleted = showCompletedToggle.checked;
@@ -349,6 +422,25 @@ function renderTrashView() {
   const trashedTasks = getTasks().filter((task) => task.deleted).sort(compareTrashNewestFirst);
   trashCountText.textContent = `Trash — ${trashedTasks.length} of ${TRASH_CAP}`;
   renderTrash(trashList, trashedTasks);
+}
+
+// Step 13 (D1/D4): the Overdue screen — a flat list of every non-deleted,
+// non-completed task whose due date's local calendar day is strictly before
+// today's (isOverdueTask, render.js), ordered by D5: the exact same
+// depth-first main-list render-position index Focus sorts by
+// (computeMainListOrderIndex), never a second ordering rule and never raw
+// `order` (which is only meaningful within one sibling group — see the
+// step-12 issue-1 Decisions entry this reuses verbatim). Rows are full task
+// rows (render.js's renderOverdue, reusing createTaskElement/
+// updateTaskElement), flat, at depth 0 — exactly Focus's row shape.
+function renderOverdueView() {
+  const nonDeletedTasks = getTasks().filter((task) => !task.deleted);
+  const orderIndex = computeMainListOrderIndex(nonDeletedTasks);
+  const overdueTasks = nonDeletedTasks
+    .filter((task) => isOverdueTask(task))
+    .sort((a, b) => (orderIndex.get(a.id) ?? Infinity) - (orderIndex.get(b.id) ?? Infinity));
+  overdueCountText.textContent = `Overdue — ${overdueTasks.length}`;
+  renderOverdue(overdueList, overdueTasks, (id, field) => closeEdit(id, field));
 }
 
 // Picks which deleted documents to permanently purge once the Trash holds
@@ -598,20 +690,28 @@ taskSection.addEventListener("click", async (event) => {
     return;
   }
 
-  // Step 12 (D1/D4): a pinned task has TWO independent <li>s — its Focus row
-  // (inside #focus-list) and its normal-place row — each with its own
-  // editingTitle/editingNote state in render.js. Which one this click landed
-  // on decides `context` (render.js's row-context parameter, issue 2) and
-  // the openEdits key's field suffix, so opening an edit here can never
-  // accidentally toggle the OTHER row's independent edit state.
-  const isFocusRow = li.closest("#focus-list") != null;
-  const context = isFocusRow ? "focus" : "main";
+  // Step 12 (D1/D4), extended by step 13 to three contexts: a task can now
+  // have up to THREE independent <li>s — its normal-place row, its Focus
+  // row, and (on the Overdue screen) its Overdue row — each with its own
+  // editingTitle/editingNote/editingDueDate state in render.js. Which one
+  // this click landed on decides `context` (render.js's row-context
+  // parameter, issue 2) and the openEdits key's field suffix, so opening an
+  // edit here can never accidentally toggle a DIFFERENT row's independent
+  // edit state.
+  const context = contextForRow(li);
+  const fieldSuffix = fieldSuffixForContext(context);
   if (event.target.closest(".task-item__label")) {
-    beginEdit(taskId, isFocusRow ? "title:focus" : "title");
+    beginEdit(taskId, "title" + fieldSuffix);
     beginTitleEdit(taskId, context);
   } else if (event.target.closest(".task-item__note-display")) {
-    beginEdit(taskId, isFocusRow ? "note:focus" : "note");
+    beginEdit(taskId, "note" + fieldSuffix);
     beginNoteEdit(taskId, context);
+  } else if (event.target.closest(".task-item__due-display")) {
+    // Step 13 (D10): clicking the due-date display opens its inline
+    // `<input type="date">` editor — the exact same click-to-edit shape
+    // title/note already use, reusing step 2's machinery and guard.
+    beginEdit(taskId, "dueDate" + fieldSuffix);
+    beginDueDateEdit(taskId, context);
   }
 });
 
@@ -970,6 +1070,45 @@ async function handleTogglePinClick(taskId) {
   });
 }
 
+// Step 13 (D10): the context menu's "Set due date"/"Change due date" item —
+// opens the inline editor on the SAME row/context the menu was opened for
+// (stashed on `taskMenu.dataset.context` by openTaskMenuForTask), the same
+// way clicking the due-date display directly does. Not a mutation itself —
+// no enqueueMutation here — the actual write happens on commit (blur),
+// exactly like every other click-to-edit entry point in this file.
+function handleEditDueDateMenuClick(taskId, context) {
+  const fieldSuffix = fieldSuffixForContext(context);
+  beginEdit(taskId, "dueDate" + fieldSuffix);
+  beginDueDateEdit(taskId, context);
+}
+
+// Step 13 (D10): the context menu's "Clear due date" item — an immediate
+// one-shot clear with no editor step, the same shape as step 12's
+// handleTogglePinClick (one enqueueMutation-wrapped whole-document saveTask,
+// re-validated at write time rather than trusting the menu's click-time
+// state). Only shown in the menu when task.dueDate is already set, but the
+// write itself re-checks fresh anyway per this file's own belt-and-suspenders
+// convention.
+async function handleClearDueDateClick(taskId) {
+  const userId = getCurrentUserId();
+  const task = getTasks().find((t) => t.id === taskId);
+  if (!userId || !task || task.deleted) return;
+
+  await enqueueMutation(async () => {
+    const currentUserId = getCurrentUserId();
+    const currentTask = getTasks().find((t) => t.id === taskId);
+    if (!currentUserId || !currentTask || currentTask.deleted) return;
+    try {
+      await saveTask(currentUserId, { ...currentTask, dueDate: null });
+    } catch (error) {
+      console.error("Failed to clear due date:", error);
+      alert("Could not clear due date.");
+    } finally {
+      await refreshTasks();
+    }
+  });
+}
+
 // 5c. Enter commits a title edit (titles are single-line). Escape cancels
 // either edit without saving. Notes are multi-line, so Enter is left alone
 // there — it types a newline — and a note edit only ever commits on blur
@@ -977,9 +1116,13 @@ async function handleTogglePinClick(taskId) {
 taskSection.addEventListener("keydown", (event) => {
   const isTitleInput = event.target.classList?.contains("task-item__title-input");
   const isNoteInput = event.target.classList?.contains("task-item__note-input");
-  if (!isTitleInput && !isNoteInput) return;
+  // Step 13: the due-date input commits on Enter same as title (it's a
+  // single value, not multi-line text the way a note is), and cancels on
+  // Escape identically to both.
+  const isDueDateInput = event.target.classList?.contains("task-item__due-input");
+  if (!isTitleInput && !isNoteInput && !isDueDateInput) return;
 
-  if (event.key === "Enter" && isTitleInput) {
+  if (event.key === "Enter" && (isTitleInput || isDueDateInput)) {
     event.preventDefault();
     event.target.blur(); // falls through to the focusout handler, which commits
   } else if (event.key === "Escape") {
@@ -997,37 +1140,45 @@ taskSection.addEventListener("keydown", (event) => {
 // edit was discarded, rather than re-alerting every time focus tries to
 // leave.
 //
-// Step 12 (D1/D4): `isFocusRow`/`context` pick which of a pinned task's two
-// independent rows this specific input belongs to — the same row-vs-row
-// disambiguation the click-to-edit listener above uses (issue 2: `context`
-// is now render.js's own row-context parameter, not a second named function)
-// — and `field` gets a `:focus` suffix to match the openEdits key beginEdit
-// used when this edit opened, so closeEdit's idempotent guard closes exactly
-// the interaction this row's edit actually holds, never the OTHER row's
-// independent one for the same task.
+// Step 12 (D1/D4), extended by step 13 to three contexts: `context` picks
+// which of a task's up-to-three independent rows this specific input
+// belongs to — the same row-vs-row disambiguation the click-to-edit listener
+// above uses (issue 2: `context` is render.js's own row-context parameter,
+// not a second named function per context) — and `field` gets the matching
+// suffix (none for "main", ":focus"/":overdue" otherwise) to match the
+// openEdits key beginEdit used when this edit opened, so closeEdit's
+// idempotent guard closes exactly the interaction this row's edit actually
+// holds, never a DIFFERENT row's independent one for the same task.
 taskSection.addEventListener("focusout", async (event) => {
   const target = event.target;
   const isTitleInput = target.classList?.contains("task-item__title-input");
   const isNoteInput = target.classList?.contains("task-item__note-input");
-  if (!isTitleInput && !isNoteInput) return;
+  const isDueDateInput = target.classList?.contains("task-item__due-input");
+  if (!isTitleInput && !isNoteInput && !isDueDateInput) return;
 
   const li = target.closest("li");
-  const isFocusRow = li?.closest("#focus-list") != null;
-  const context = isFocusRow ? "focus" : "main";
-  const field = (isTitleInput ? "title" : "note") + (isFocusRow ? ":focus" : "");
+  const context = contextForRow(li);
+  const fieldName = isTitleInput ? "title" : isNoteInput ? "note" : "dueDate";
+  const field = fieldName + fieldSuffixForContext(context);
   const taskId = li?.dataset.taskId;
   const userId = getCurrentUserId();
   const task = getTasks().find((t) => t.id === taskId);
 
   const endEdit = () => {
     if (isTitleInput) endTitleEdit(taskId, context);
-    else endNoteEdit(taskId, context);
+    else if (isNoteInput) endNoteEdit(taskId, context);
+    else endDueDateEdit(taskId, context);
   };
   const getValue = () =>
-    isTitleInput ? getTitleInputValue(taskId, context) : getNoteInputValue(taskId, context);
+    isTitleInput
+      ? getTitleInputValue(taskId, context)
+      : isNoteInput
+        ? getNoteInputValue(taskId, context)
+        : getDueDateInputValue(taskId, context);
   const setValue = (value) => {
     if (isTitleInput) setTitleInputValue(taskId, context, value);
-    else setNoteInputValue(taskId, context, value);
+    else if (isNoteInput) setNoteInputValue(taskId, context, value);
+    else setDueDateInputValue(taskId, context, value);
   };
 
   const cancelling = target.dataset.cancelling === "true";
@@ -1073,7 +1224,7 @@ taskSection.addEventListener("focusout", async (event) => {
     });
     endEdit();
     closeEdit(taskId, field);
-  } else {
+  } else if (isNoteInput) {
     const newNote = getValue();
     if (newNote.length > NOTE_MAX_LENGTH) {
       alert(`Note must be ${NOTE_MAX_LENGTH} characters or fewer. Edit discarded.`);
@@ -1097,6 +1248,33 @@ taskSection.addEventListener("focusout", async (event) => {
     });
     endEdit();
     closeEdit(taskId, field);
+  } else {
+    // Step 13 (D9): due date commit. `rawValue` is "" (cleared) or a
+    // "YYYY-MM-DD" string from the native date picker; parsed via
+    // parseDateInputToLocalMidnight — never `new Date(rawValue)` — see
+    // render.js's own comment on that function for the UTC-parsing bug this
+    // avoids (D2). No length/format cap to enforce here the way title/note
+    // have one: a native `<input type="date">` can only ever produce "" or a
+    // well-formed calendar date string.
+    const rawValue = getValue();
+    const newDueDate = rawValue ? parseDateInputToLocalMidnight(rawValue) : null;
+    await enqueueMutation(async () => {
+      const currentUserId = getCurrentUserId();
+      const currentTask = getTasks().find((t) => t.id === taskId);
+      if (!currentUserId || !currentTask) return;
+      try {
+        // Whole-document write (D9) — never updateDoc — same rule every
+        // other mutation in this file follows.
+        await saveTask(currentUserId, { ...currentTask, dueDate: newDueDate });
+        await refreshTasks();
+      } catch (error) {
+        console.error("Failed to save due date:", error);
+        alert("Could not save due date.");
+        setValue(formatDateForInput(currentTask.dueDate)); // revert to the last-saved value
+      }
+    });
+    endEdit();
+    closeEdit(taskId, field);
   }
 });
 
@@ -1114,7 +1292,7 @@ taskSection.addEventListener("contextmenu", (event) => {
   const li = event.target.closest("li");
   if (!li) return;
   event.preventDefault(); // suppress the native OS/browser context menu
-  openTaskMenuForTask(li.dataset.taskId, event.clientX, event.clientY);
+  openTaskMenuForTask(li.dataset.taskId, event.clientX, event.clientY, contextForRow(li));
 });
 
 // Long-press: a ~500ms pointerdown-and-hold on a row. Cancelled by lifting
@@ -1634,11 +1812,15 @@ taskSection.addEventListener("pointerdown", (event) => {
   }
 
   const taskId = li.dataset.taskId;
+  // Captured now, not re-derived from `li` inside the timer below — same
+  // reasoning as capturing `taskId` itself as a plain string rather than
+  // holding onto the DOM node for the whole ~500ms window.
+  const longPressContext = contextForRow(li);
   longPressStart = { x: event.clientX, y: event.clientY };
   longPressTimer = setTimeout(() => {
     longPressTimer = null;
     longPressOpenedMenu = true; // consumed by pointerup below, not suppressed here
-    openTaskMenuForTask(taskId, longPressStart.x, longPressStart.y);
+    openTaskMenuForTask(taskId, longPressStart.x, longPressStart.y, longPressContext);
     longPressStart = null;
   }, LONG_PRESS_MS);
 });
@@ -1693,6 +1875,9 @@ taskMenu.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-action]");
   if (!button) return;
   const taskId = taskMenu.dataset.taskId;
+  // Step 13: which of the task's up-to-three rows the menu was opened FOR —
+  // read before closeTaskMenu() clears it, same as `taskId` above.
+  const context = taskMenu.dataset.context || "main";
   const action = button.dataset.action;
   closeTaskMenu();
   if (!taskId) return;
@@ -1701,6 +1886,8 @@ taskMenu.addEventListener("click", async (event) => {
   else if (action === "move-out") await handleMoveOutOfInboxClick(taskId);
   else if (action === "move-to-top") await performReparent(taskId, null);
   else if (action === "toggle-pin") await handleTogglePinClick(taskId);
+  else if (action === "edit-due-date") handleEditDueDateMenuClick(taskId, context);
+  else if (action === "clear-due-date") await handleClearDueDateClick(taskId);
   else if (action === "delete") await handleDeleteClick(taskId);
 });
 

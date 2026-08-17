@@ -55,10 +55,22 @@
 // sibling group, so a cross-group traversal-order index built from the tree
 // containers' own `flattenTree` output is what Focus now sorts by instead.
 
+// Step 13 (Dates, D4): Overdue is a third flat, hand-picked container, exactly
+// like Focus (step 12) — its own separate Map (`overdueEntriesByTaskId` below)
+// so a task can render on its normal-place row AND its Overdue row at once,
+// the same one-id-two-<li>s split D4 (step 12) already established for
+// Focus. UNLIKE Focus, Overdue is never passed into `renderTasks` — per this
+// step's own D4, Overdue is a SCREEN (a `currentView` value, following step
+// 9's Trash precedent), not a section rendered inside the main view — so it
+// gets its own exported render function (`renderOverdue` below, near
+// `renderTrash`) called from app.js's own separate view-render path, not a
+// third array/parameter on `renderTasks`.
+
 import { buildTree, depthOf } from "./taskTree.js";
 
 const entriesByTaskId = new Map();
 const focusEntriesByTaskId = new Map();
+const overdueEntriesByTaskId = new Map();
 
 // The sibling comparator — orders tasks that share the same parent. This is
 // the exact seam step 16 replaces with the quadrant-first comparator. It
@@ -103,6 +115,131 @@ function flattenTree(allTasks, visibleIds) {
 
   visit(tree.roots);
   return result;
+}
+
+// --- Step 13 (Dates): date/age/overdue helpers -----------------------------
+// Pure, side-effect-free, and exported for direct verification — the same
+// precedent as app.js's compareTrashNewestFirst/computeReorderOrder and this
+// module's own sortTasks: no test runner exists in this project, so anything
+// that isn't DOM has to be callable directly against synthetic data.
+//
+// Unwraps either a Firestore Timestamp (has `.toDate()`, what a real read
+// returns) or a plain JS Date (what a freshly-constructed-but-not-yet-
+// refetched value would be, though this app never optimistically renders
+// one — see the "one refresh strategy" rule) into a plain Date, or null.
+function timestampToDate(value) {
+  if (!value) return null;
+  if (typeof value.toDate === "function") return value.toDate();
+  if (value instanceof Date) return value;
+  return null;
+}
+
+// Local midnight of `date`'s calendar day — the one notion of "day boundary"
+// every date/age/overdue computation below shares, so "today" always means
+// the same instant regardless of which of these three functions asks for it.
+export function localMidnight(date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+// D2: an <input type="date">'s value is always "YYYY-MM-DD" — timezone-free
+// text naming a calendar day, not an instant. Parsing it with the STRING
+// constructor form, `new Date(value)`, is the textbook bug: the ES spec
+// parses a bare "YYYY-MM-DD" as UTC midnight, so `new Date("2026-08-17")` in
+// any timezone WEST of Greenwich (e.g. any US timezone, a negative UTC
+// offset) resolves to local time on 2026-08-16 — one whole calendar day
+// before what the user actually typed. Building the Date from its numeric
+// year/month/day components via the `new Date(y, m, d)` FORM instead (never
+// the string form) constructs LOCAL midnight directly, which is what the
+// date picker showed the user and is therefore the only correct reading.
+export function parseDateInputToLocalMidnight(value) {
+  if (!value) return null;
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+// The reverse conversion, same bug mirrored: `date.toISOString().slice(0,10)`
+// always renders in UTC, so formatting a local-midnight Date this way can
+// print the PREVIOUS calendar day in the same negative-UTC-offset timezones
+// the comment above warns about — this function reads the LOCAL
+// getFullYear/getMonth/getDate components instead, making it the exact
+// inverse of parseDateInputToLocalMidnight (round-trips through the same
+// local frame both ways, never through UTC on either leg).
+export function formatDateForInput(dueDate) {
+  const date = timestampToDate(dueDate);
+  if (!date) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+// Human display text for a row's due-date area. `overdue` is passed in
+// (computed once by the caller via isOverdueTask) rather than recomputed here
+// — this function only knows how to word two already-decided states, not
+// which one applies.
+function formatDueDateDisplayText(dueDate, overdue) {
+  const date = timestampToDate(dueDate);
+  if (!date) return "No due date";
+  const label = date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  return overdue ? `Overdue: ${label}` : `Due: ${label}`;
+}
+
+// D3: a task is overdue iff its due date's LOCAL calendar day is strictly
+// BEFORE today's local calendar day — due TODAY is its own bucket, not
+// overdue (product-spec.md §6 treats them as distinct). Completed and
+// deleted tasks are never overdue, whatever their stored dueDate says. `now`
+// defaults to the real clock but is overridable so this can be exercised
+// directly against a fixed synthetic "today" without waiting for real time
+// to pass or monkey-patching the global Date.
+export function isOverdueTask(task, now = new Date()) {
+  if (task.completed || task.deleted) return false;
+  const dueDate = timestampToDate(task.dueDate);
+  if (!dueDate) return false;
+  return localMidnight(dueDate).getTime() < localMidnight(now).getTime();
+}
+
+// D7: age is derived from createdAt on every render, never stored, no new
+// field, no migration. Whole LOCAL calendar days, floored — deliberately the
+// same calendar-day framing as isOverdueTask above (not a rolling 24-hour
+// elapsed-time measure), so "today" means "created today," not "created
+// less than 24 hours ago." `createdAt` can be null on a doc whose
+// serverTimestamp() hasn't resolved in the local snapshot yet — that must
+// render as a plain, non-alarming string, never "NaN days old".
+export function computeAgeLabel(createdAt, now = new Date()) {
+  const createdDate = timestampToDate(createdAt);
+  if (!createdDate) return "age unknown";
+  const days = Math.floor(
+    (localMidnight(now).getTime() - localMidnight(createdDate).getTime()) / 86400000
+  );
+  if (days <= 0) return "today";
+  return `${days} day${days === 1 ? "" : "s"} old`;
+}
+
+// D5: the exact ordering mechanism issue 1's Focus fix introduced (see
+// PROGRESS.md's superseding Decisions entry) — a hand-picked flat set's
+// order is each task's index in the REAL depth-first render position the
+// tree containers (Inbox, then the main list, in that order) produce, never
+// a raw `order`-field comparison (which is only meaningful within one
+// sibling group). Hoisted into its own exported function, rather than left
+// inline inside renderTasks, specifically so Overdue (a separate SCREEN,
+// rendered from its own call — see the file-header note above) can share the
+// identical mechanism instead of a second, independently-drifting copy;
+// renderTasks itself below now calls this too, so there is exactly one
+// implementation regardless of caller, per this step's own D5 instruction
+// not to invent a second ordering mechanism.
+export function computeMainListOrderIndex(nonDeletedTasks) {
+  const orderIndex = new Map();
+  const groups = [
+    nonDeletedTasks.filter((task) => task.inInbox),
+    nonDeletedTasks.filter((task) => !task.inInbox),
+  ];
+  for (const tasks of groups) {
+    const visibleIds = new Set(tasks.map((task) => task.id));
+    for (const { task } of flattenTree(tasks, visibleIds)) {
+      if (!orderIndex.has(task.id)) orderIndex.set(task.id, orderIndex.size);
+    }
+  }
+  return orderIndex;
 }
 
 // `containers` is an array of `{ element, tasks, visibleIds }` — one entry
@@ -156,12 +293,7 @@ export function renderTasks(containers, focusContainer, onEditCancelled) {
   // containers are walked in the exact [Inbox, main list] sequence app.js
   // always passes them in, so a pinned Inbox task and a pinned main-list
   // task still land in one single, well-defined relative order.
-  const mainListOrderIndex = new Map();
-  for (const { flattened } of perContainer) {
-    for (const { task } of flattened) {
-      if (!mainListOrderIndex.has(task.id)) mainListOrderIndex.set(task.id, mainListOrderIndex.size);
-    }
-  }
+  const mainListOrderIndex = computeMainListOrderIndex(containers.flatMap(({ tasks }) => tasks));
   const focusTasks = focusContainer
     ? [...focusContainer.tasks].sort(
         (a, b) =>
@@ -335,6 +467,34 @@ function createTaskElement(taskId) {
   noteInput.style.display = "none";
   li.appendChild(noteInput);
 
+  // Step 13 (Dates, D10): due date + age share one full-width "meta" row,
+  // same flex-basis-100% pattern as the note row above. Due date follows the
+  // exact display/edit-input pairing every other editable field uses (D10:
+  // "an inline editor on the row reusing step 2's inline-edit machinery") —
+  // clicking the display opens the `<input type="date">`, same
+  // beginInteraction/endInteraction-guarded, survives-an-unrelated-re-render
+  // shape as the title/note fields above. Age has no edit state at all (D7:
+  // it's never stored, so there's nothing to edit) — it's a plain span,
+  // recomputed unconditionally on every updateTaskElement call.
+  const meta = document.createElement("div");
+  meta.className = "task-item__meta";
+  li.appendChild(meta);
+
+  const dueDisplay = document.createElement("span");
+  dueDisplay.className = "task-item__due-display";
+  dueDisplay.dir = "auto";
+  meta.appendChild(dueDisplay);
+
+  const dueInput = document.createElement("input");
+  dueInput.type = "date";
+  dueInput.className = "task-item__due-input";
+  dueInput.style.display = "none";
+  meta.appendChild(dueInput);
+
+  const ageDisplay = document.createElement("span");
+  ageDisplay.className = "task-item__age";
+  meta.appendChild(ageDisplay);
+
   // Every per-row action button lives in one wrapper (see index.html's
   // .task-item__actions) so the group is pushed right as a whole regardless
   // of which individual buttons are visible for this task.
@@ -382,11 +542,15 @@ function createTaskElement(taskId) {
     titleInput,
     noteDisplay,
     noteInput,
+    dueDisplay,
+    dueInput,
+    ageDisplay,
     moveOutButton,
     addSubtaskButton,
     deleteButton,
     editingTitle: false,
     editingNote: false,
+    editingDueDate: false,
     // Last task data this row was rendered from. Kept up to date on every
     // update — including updates that skip the DOM writes below because an
     // edit is open — so the edit-close functions have something current to
@@ -442,6 +606,19 @@ function updateTaskElement(entry, task, depth) {
     renderNoteInto(noteDisplay, task.note || "");
     noteInput.value = task.note || "";
   }
+
+  // Step 13 (Dates): same "skip while mid-edit" rule as title/note above —
+  // an open date editor holds a value the user hasn't saved yet, and a
+  // refresh landing mid-edit must never overwrite it (D10's own "survives an
+  // unrelated re-render" requirement). Age has no edit state to guard —
+  // it's always recomputed fresh (D7: derived every render, never stored).
+  const overdue = isOverdueTask(task);
+  if (!entry.editingDueDate) {
+    entry.dueDisplay.textContent = formatDueDateDisplayText(task.dueDate, overdue);
+    entry.dueInput.value = formatDateForInput(task.dueDate);
+  }
+  entry.dueDisplay.classList.toggle("task-item__due-display--overdue", overdue);
+  entry.ageDisplay.textContent = computeAgeLabel(task.createdAt);
 }
 
 // --- Edit mode: parameterized over row-context -----------------------------
@@ -460,16 +637,14 @@ function updateTaskElement(entry, task, depth) {
 // was always coming. This collapses back to ONE parameterized function per
 // accessor (8 exports total), where `context` selects which Map to address.
 //
-// There are already THREE row-shaped containers in this codebase, not two:
-// "main" (`entriesByTaskId`), "focus" (`focusEntriesByTaskId`), and Trash
-// (`trashEntriesByTaskId` below) — CONTEXT_MAPS is where a fourth, or
-// Trash's own eventual edit support, becomes a one-line addition instead of
-// another doubling. Trash isn't wired in today because its rows carry no
-// edit state (see renderTrash's own comment) — there is nothing yet for
-// "trash" to address.
+// Step 13: exactly the one-line addition this comment predicted — "overdue"
+// (`overdueEntriesByTaskId`) is the third row-shaped, edit-capable context.
+// Trash still isn't wired in (its rows carry no edit state); everything else
+// about the reasoning above is unchanged.
 const CONTEXT_MAPS = {
   main: entriesByTaskId,
   focus: focusEntriesByTaskId,
+  overdue: overdueEntriesByTaskId,
 };
 
 function mapForContext(context) {
@@ -591,6 +766,63 @@ export function getNoteInputValue(taskId, context) {
 }
 export function setNoteInputValue(taskId, context, value) {
   setNoteInputValueIn(mapForContext(context), taskId, value);
+}
+
+// --- Due date edit mode (step 13, D10) --------------------------------------
+// Same map-parameterized-helper / thin-wrapper shape as title/note above, for
+// the identical reason: a task can render on up to three independent rows at
+// once (main, Focus, Overdue), each with its own dueInput and its own
+// editingDueDate flag.
+
+function beginDueDateEditIn(map, taskId) {
+  const entry = map.get(taskId);
+  if (!entry) return;
+  entry.editingDueDate = true;
+  entry.dueDisplay.style.display = "none";
+  entry.dueInput.style.display = "";
+  entry.dueInput.focus();
+}
+
+// Same resync rule as endTitleEdit/endNoteEdit above: updateTaskElement
+// skipped writing the display/input while editingDueDate was true, so both
+// still hold whatever was on screen when the edit opened until this rebuilds
+// them from `entry.task` (a committed save, an Escape cancel, and a failed
+// write that already reverted the input all want the last-known-saved due
+// date back on screen).
+function endDueDateEditIn(map, taskId) {
+  const entry = map.get(taskId);
+  if (!entry) return;
+  entry.editingDueDate = false;
+  if (entry.task) {
+    const overdue = isOverdueTask(entry.task);
+    entry.dueDisplay.textContent = formatDueDateDisplayText(entry.task.dueDate, overdue);
+    entry.dueDisplay.classList.toggle("task-item__due-display--overdue", overdue);
+    entry.dueInput.value = formatDateForInput(entry.task.dueDate);
+  }
+  entry.dueInput.style.display = "none";
+  entry.dueDisplay.style.display = "";
+}
+
+function getDueDateInputValueIn(map, taskId) {
+  return map.get(taskId)?.dueInput.value ?? "";
+}
+
+function setDueDateInputValueIn(map, taskId, value) {
+  const entry = map.get(taskId);
+  if (entry) entry.dueInput.value = value;
+}
+
+export function beginDueDateEdit(taskId, context) {
+  beginDueDateEditIn(mapForContext(context), taskId);
+}
+export function endDueDateEdit(taskId, context) {
+  endDueDateEditIn(mapForContext(context), taskId);
+}
+export function getDueDateInputValue(taskId, context) {
+  return getDueDateInputValueIn(mapForContext(context), taskId);
+}
+export function setDueDateInputValue(taskId, context, value) {
+  setDueDateInputValueIn(mapForContext(context), taskId, value);
 }
 
 // --- Note rendering ---------------------------------------------------------
@@ -720,4 +952,50 @@ function createTrashElement(taskId) {
 // always safe to re-sync from `task` on every pass.
 function updateTrashElement(entry, task) {
   entry.label.textContent = task.title;
+}
+
+// --- Overdue rendering (step 13) --------------------------------------------
+// D4: Overdue is a SCREEN (its own `currentView` entry in app.js, following
+// step 9's Trash view-switching precedent), never a section folded into
+// `renderTasks`'s single call the way Focus is — app.js calls this directly
+// from its own separate view-render path. But its ROWS are exactly Focus's
+// row shape (D4): full task rows (checkbox, title/note/due-date inline edit,
+// drag handle, action buttons), flat, at depth 0, built with the very same
+// createTaskElement/updateTaskElement pair every other row uses — never
+// Trash's much simpler label-plus-button shape, since Trash rows carry no
+// edit state and Overdue rows very much do (that's the whole point of this
+// step's due-date editor). `overdueEntriesByTaskId` (declared at the top of
+// this file) is what keeps a task's Overdue row independent of its
+// normal-place and Focus rows, the same one-Map-per-container pattern
+// `trashEntriesByTaskId`/`focusEntriesByTaskId` already established.
+export function renderOverdue(container, tasks, onEditCancelled) {
+  const seenIds = new Set(tasks.map((task) => task.id));
+
+  for (const task of tasks) {
+    let entry = overdueEntriesByTaskId.get(task.id);
+    if (!entry) {
+      entry = createTaskElement(task.id);
+      overdueEntriesByTaskId.set(task.id, entry);
+    }
+    updateTaskElement(entry, task, 0); // flat (D4/D2 precedent) — no tree, no depth
+  }
+
+  // Same cleanup rule as Focus's own pass in renderTasks: a task leaving the
+  // rendered set (no longer overdue, completed, deleted, restored past its
+  // due date some other way) can be mid-edit on this exact row — its own
+  // focusout never fires because the element is about to be discarded, not
+  // blurred — so the interaction it opened has to be told to close here.
+  for (const id of overdueEntriesByTaskId.keys()) {
+    if (!seenIds.has(id)) {
+      const entry = overdueEntriesByTaskId.get(id);
+      if (onEditCancelled) {
+        if (entry.editingTitle) onEditCancelled(id, "title:overdue");
+        if (entry.editingNote) onEditCancelled(id, "note:overdue");
+        if (entry.editingDueDate) onEditCancelled(id, "dueDate:overdue");
+      }
+      overdueEntriesByTaskId.delete(id);
+    }
+  }
+
+  reconcileChildren(container, tasks.map((task) => overdueEntriesByTaskId.get(task.id).li));
 }

@@ -1,6 +1,6 @@
 # Progress
 
-Last updated: 2026-08-17 — **Steps 1–12 implemented.** Step 13 (Dates)
+Last updated: 2026-08-17 — **Steps 1–13 implemented.** Step 14 (Tag colors)
 is next. No signed-in browser walkthrough has been reported back for any step
 yet — the click-path below is still the first thing to run.
 
@@ -20,8 +20,8 @@ yet — the click-path below is still the first thing to run.
 | 10 | Manual reorder | done |
 | 11 | Drag-to-reparent | done |
 | 12 | Focus / pin | done |
-| 13 | Dates | next |
-| 14 | Tag colors | planned |
+| 13 | Dates | done |
+| 14 | Tag colors | next |
 | 15 | Quadrant mapping | planned |
 | 16 | Priority ordering | planned |
 | 17 | Tag rename/delete | planned |
@@ -30,47 +30,80 @@ yet — the click-path below is still the first thing to run.
 | 20 | Search — advanced | planned |
 | 21 | Export / import | planned |
 
-## Resume here — step 13 (Dates)
+## Resume here — step 14 (Tag colors)
 
-**Exact next action:** implement step 13, per product-spec.md §5 ("Dates &
-Temporal Tracking"):
+**Exact next action:** implement step 14, per product-spec.md §4 ("Tagging &
+Dynamic Styling") — specifically the "Visual Color Coding" bullet:
 
-- **Task Dates:** assign a specific due date to any task.
-- **Task Age:** computed from creation date (e.g. "task is 20 days old"),
-  read-only, never stored separately.
-- **Recurrence and the Overdue Alerts Screen are read into §5 but are their
-  OWN later step (18, "Recurrence")** — the step table has no separate
-  "overdue alerts" entry, so whether that screen ships alongside step 13's
-  plain due-date UI or waits for step 18 is this step's own scoping call to
-  make, not something already decided here. Re-read product-spec.md §5 in
-  full before committing to a scope — don't assume step 13 is "just a date
-  picker" without checking whether the overdue screen is expected sooner.
+- A **tag settings page** lets the user assign a custom **foreground and
+  background color to a specific tag** (`#p1`, `@home`, etc.) — the spec is
+  explicit this is "the **same** tag settings page that assigns matrix
+  quadrants (§7)", i.e. step 15 owns the other half of the same screen. Build
+  the screen so a quadrant column/section is a one-line addition for step 15,
+  not a rewrite.
+- Applying a tag colors the task automatically. **If a task carries more than
+  one colored tag, the color of the LAST tag in the title TEXT wins** — "last"
+  meaning last in the string as typed (§1's rule: character order, not
+  left-to-right screen position, which differ in a Hebrew title with
+  English-tag suffixes reading right-to-left).
+- **Re-typing the title to reorder tags changes the color** — colors are
+  derived from the title's tag order on every render, never cached/stored
+  per-task, so this "just happens" once the derivation is correct; no special
+  re-color step is needed on a title edit.
+- **The tag vocabulary is open** (§7 confirms this for quadrants too, and it
+  applies here identically): a brand-new tag typed into a title must be
+  usable immediately, with no code change and no pre-registration step. An
+  unconfigured tag simply has no color override (falls back to whatever the
+  current default/no-color rendering is) — the settings page is where a color
+  gets ASSIGNED, not where a tag comes into existence.
 
 **What already exists for this step to build on:**
-- **`dueDate: timestamp | null` is already in the schema and already accepted
-  by `addTask`** (`taskService.js`: `dueDate: taskDetails.dueDate ? new
-  Date(taskDetails.dueDate) : null`), per FIREBASE.md's schema table — "Accepted
-  by `addTask`, not yet supplied by the UI." No `saveTask`/`normalizeTask`
-  change is needed to persist a due date; `normalizeTask` doesn't even need a
-  fallback since the field already defaults to `null` at creation.
-- **`createdAt` is already a real `serverTimestamp()`** on every task, so task
-  age is a pure display computation (`Date.now() - createdAt.toMillis()`) —
-  no new field, no migration.
-- **The context-menu-only-action pattern is now well established** (step 11's
-  "Move to top level", step 12's "Pin to Focus"/"Unpin from Focus") if setting
-  a due date turns out to want a menu entry rather than (or alongside) an
-  inline per-row control — follow `openTaskMenuForTask`'s
-  show/hide-per-task-state pattern rather than inventing a new one.
-- **firestore.rules likely needs a real look**: `isValidTask()` should be
-  checked for whether it already validates `dueDate`'s type/shape or is
-  silent on it (silent would mean any value currently passes rules, which is
-  probably not intended once the UI starts writing real dates).
+- **`task.colors.{foreground,background}` already exists as a whole-TASK
+  field**, written once at creation (`app.js`'s add/subtask handlers hardcode
+  green: `{ foreground: "#ffffff", background: "#10b981" }`) and read directly
+  by `render.js`'s `updateTaskElement` (`li.style.color`/`li.style.
+  backgroundColor` from `task.colors`). This is the exact seam step 14
+  replaces — render.js's own comment on those two lines already says so
+  ("Per-task color still comes from stored data (step 14 replaces this with
+  per-tag colors)"). The replacement is a PER-TAG lookup (probably a new
+  top-level doc/collection, e.g. `users/{uid}/tagSettings/{tag}` or a single
+  settings document keyed by tag name — this step's own call to make), keyed
+  by whichever tag wins per the "last tag in the title" rule above, not a
+  field stored on the task document at all. Decide whether `task.colors` stays
+  as a fallback for an untagged task or gets removed entirely — check
+  product-spec.md for whether an untagged task needs a default color.
+- **`parseTags(title)` (app.js) already extracts tags in title-string order**
+  (`title.match(/([#@]\w+)/g)`) every time a title is committed — the "last
+  tag wins" rule is `tags[tags.length - 1]` off that same array, not a new
+  parsing pass.
+- **The Tag Settings Page itself doesn't exist yet** — no screen, no route, no
+  storage. This step (or step 15, sharing the screen) is the first to add a
+  fourth `currentView` entry / a genuinely new UI area, not just a new field
+  on the existing task rows. Decide the view/currentView shape (a fourth panel
+  like Trash/Overdue, or a modal/dialog) before writing storage code — the
+  storage shape should follow the screen's actual read/write pattern, not the
+  other way around.
+- **Step 13's `CONTEXT_MAPS` precedent (render.js)** is what to reach for if
+  tag-colored text needs its own per-row DOM update path — but a per-TAG color
+  is a title-rendering concern (which whole title text gets which color),
+  likely simpler than another edit-mode context: probably just changes what
+  `updateTaskElement` assigns to `li.style.color`/`backgroundColor`, reading a
+  tag-color lookup instead of `task.colors`.
+- **firestore.rules will need a real look** for whatever new collection/
+  document shape holds tag color settings — `isValidTask()` doesn't apply to
+  a document that isn't a task, so a new `match` block (with its own
+  `isValidTagSettings()`-shaped validator) is likely needed. This is new
+  schema, unlike step 13 which reused an already-valid field — read
+  firestore.rules in full before assuming the existing rules cover it.
 
-**Files likely touched:** `public/index.html` (a due-date input per row, and/or
-a menu item), `public/app.js` (a `handleSetDueDateClick`-shaped handler through
-`enqueueMutation`, the "age" display computation), `public/render.js` (rendering
-the due date and/or age string per row), possibly `firestore.rules` if
-`isValidTask()` needs a real `dueDate` check it doesn't have yet.
+**Files likely touched:** `public/index.html` (a new tag-settings view/panel,
+a nav entry to reach it), `public/app.js` (the settings screen's own
+read/write handlers, view dispatch), `public/render.js` (`updateTaskElement`'s
+color assignment replaced with a per-tag lookup), possibly a new
+`public/tagService.js` (mirroring `taskService.js`'s shape) if tag settings
+get their own Firestore reads/writes, and `firestore.rules` (a new match block
+for the new collection/document — this step, unlike step 13, DOES need a
+rules change).
 
 **No step has been confirmed in a signed-in browser yet.** Everything below marked
 "verified" was verified unsigned-in, by driving the real modules with synthetic
@@ -132,6 +165,17 @@ a bogus `does not provide an export named ...` error and cost real time once alr
     in the menu (absent for a task with no parent); choosing it promotes the task
     (and its subtree) to the root of the main list, keeping its Inbox membership
     exactly as it was.
+13. Click a task's due-date area (it reads "No due date" until set) → an inline
+    date picker opens; pick a date and click away → the row shows "Due: <date>"
+    (or "Overdue: <date>" in red/orange if that date is in the past) and the task's
+    age (e.g. "5 days old") appears beside it. Right-click the task → "Change due
+    date" (label was "Set due date" before) and "Clear due date" both appear;
+    choosing "Clear due date" removes it without opening the editor. Click
+    "Overdue" (next to Trash) → every task due before today, and only those,
+    appears there — one due today or in the future does not, and neither does a
+    completed or deleted task that was overdue before that state changed — in the
+    same relative order they hold in the main list. Reload the page → the due date,
+    its Overdue-screen membership, and the age all survive.
 
 **Files touched (steps 1–4):**
 - `public/taskService.js` — renamed from `todoService.js`; `addTask`, `fetchTasks`,
@@ -219,6 +263,63 @@ a bogus `does not provide an export named ...` error and cost real time once alr
 - No change to `firestore.rules`, `firestore.indexes.json`, or
   `taskService.js` — `pinned` was already a validated, normalized field
   (step 1); step 12 is the first thing to ever write `true` (D10).
+
+**Files touched (step 13):**
+- `public/render.js` — new date/age/overdue helpers, all pure and exported
+  for verification: `localMidnight`, `parseDateInputToLocalMidnight`/
+  `formatDateForInput` (D2's paired local-midnight conversions, each with a
+  comment on the UTC bug it avoids), `isOverdueTask` (D3), `computeAgeLabel`
+  (D7), and `computeMainListOrderIndex` (D5, hoisted out of `renderTasks`'s
+  own body — `renderTasks` now calls it too, so Focus and Overdue share
+  literally one implementation, not two that could drift). `overdueEntriesByTaskId`
+  is a third per-container Map (parallel to `focusEntriesByTaskId`/
+  `trashEntriesByTaskId`); `createTaskElement`/`updateTaskElement` grew a
+  due-date display/input pair (same skip-while-editing guard as title/note)
+  and an always-recomputed age span. `CONTEXT_MAPS` grew the `"overdue"`
+  entry (D6 — the one-line addition issue 2's fix was designed for) alongside
+  a due-date edit-mode function set (`beginDueDateEdit`/`endDueDateEdit`/
+  `getDueDateInputValue`/`setDueDateInputValue`) matching title/note's
+  map-parameterized shape exactly. `renderOverdue` (D4) is a new exported
+  function, structurally a hybrid of `renderTasks`'s Focus branch (full
+  `createTaskElement`/`updateTaskElement` rows, flat, depth 0) and
+  `renderTrash`'s standalone-screen shape (its own seen/cleanup pass, called
+  from app.js's own view-render path, never from `renderTasks`).
+- `public/app.js` — `contextForRow(li)`/`fieldSuffixForContext(context)`
+  replace step 12's boolean `isFocusRow` at every call site (click-to-edit,
+  focusout commit, context-menu open), generalizing two row-contexts to
+  three. `views.overdue`/`renderOverdueView` (D1/D4, the Trash-precedent view
+  dispatch — a THIRD `currentView` panel); `switchView` grew the
+  `overdueView.hidden` toggle. `openTaskMenuForTask` grew a `context`
+  parameter stashed on `taskMenu.dataset.context` (read by the menu's click
+  dispatch before `closeTaskMenu()` clears it, mirroring how `taskId` is
+  already read) so "Set/Change due date" opens the inline editor on the
+  correct one of a task's up-to-three rows; both call sites that open the
+  menu (a real `contextmenu`, and the long-press timer) now pass
+  `contextForRow(li)` through. Two new menu-action handlers:
+  `handleEditDueDateMenuClick` (no mutation — just opens the same inline
+  editor a direct click on the due-display does) and `handleClearDueDateClick`
+  (D9, an immediate one-shot `enqueueMutation`-wrapped `saveTask` writing
+  `dueDate: null`, same shape as step 12's `handleTogglePinClick`). The
+  `focusout` listener's title/note `if/else` grew a third `else` branch for
+  the due-date input, parsing via `parseDateInputToLocalMidnight` and writing
+  a whole-document `saveTask` (D9) — never `updateDoc`. The `keydown`
+  listener now also treats Enter-on-the-due-input as a commit (blur), same as
+  title.
+- `public/index.html` — `#overdue-btn`/`#overdue-view`/`#overdue-back-btn`/
+  `#overdue-count`/`#overdue-list` (D4, mirroring `#trash-view`'s exact
+  structure, nested inside `#task-section` for the same shared-listener
+  reason); `.task-item__meta`/`.task-item__due-display`/
+  `.task-item__due-display--overdue`/`.task-item__due-input`/`.task-item__age`
+  CSS (a full-width row below the note, mirroring the note row's own
+  layout); two new context-menu buttons, `data-action="edit-due-date"` and
+  `data-action="clear-due-date"` (D10).
+- `FIREBASE.md` — the `dueDate` schema-table row rewritten (it no longer
+  reads "not yet supplied by the UI"); the stale "Unused document fields"
+  open item corrected to drop `dueDate` from the list.
+- No change to `firestore.rules` or `firestore.indexes.json` (D8) —
+  `isValidTask()` (confirmed by reading it, not assumed) never mentions
+  `dueDate`, so every write this step adds already passed rules before this
+  step existed.
 
 **Verified (actually exercised in a real browser at localhost:5050, unsigned-in, by
 driving the real modules directly):**
@@ -531,6 +632,108 @@ driving the real modules directly):**
     cancel step silently failed to close the edit. Worth remembering for any
     later step's browser verification that relies on closing an edit or menu
     via a synthetic blur.
+- **Step 13 (Dates), verified unsigned-in against the real `render.js`,
+  `store.js`, and `app.js`'s actual attached listeners, driven through the
+  real DOM for everything that doesn't require a Firestore write, plus direct
+  calls to the real exported pure functions:**
+  - **D2 (local-midnight parse), the highest-risk item in this step —
+    verified with actual computed values, not just read as correct:**
+    `parseDateInputToLocalMidnight("2026-08-20")` returned a Date whose
+    `[getFullYear(), getMonth()+1, getDate()]` is exactly `[2026, 8, 20]`,
+    and `formatDateForInput` round-tripped it back to `"2026-08-20"` exactly.
+    Contrast proof: the naive `new Date("2026-08-20")` parses to
+    `2026-08-20T00:00:00.000Z` (confirmed via `.toISOString()` — proving it
+    really did parse as UTC midnight), and formatting that SAME instant as
+    wall-clock time in a genuine negative-UTC-offset zone
+    (`Intl.DateTimeFormat` with `timeZone: "America/New_York"`, chosen
+    specifically because this run's actual machine timezone is
+    `Asia/Jerusalem`, UTC+3 — a positive offset that would NOT expose the bug
+    on its own) printed `"2026-08-19"` — one full calendar day earlier than
+    typed. This is the exact bug D2 exists to avoid, demonstrated with real
+    computed values, not asserted from a comment.
+  - **D3 (overdue boundary), verified two ways:** the pure `isOverdueTask`
+    against a fixed synthetic "today" (2026-08-17) returned `true` for a task
+    due 2026-08-16, `false` for one due today, `false` for one due tomorrow,
+    and `false` for an otherwise-identical yesterday-due task marked
+    `completed: true` or `deleted: true`. Live in the DOM: 15 synthetic tasks
+    (including one due yesterday-but-completed and one
+    due-yesterday-but-deleted) rendered through the real `renderOverdueView`
+    produced exactly 2 rows ("Overdue — 2"), and the completed/deleted
+    yesterday-due tasks correctly did not appear — confirming the exclusion
+    isn't just correct in isolation but survives being mixed into a real
+    render pass with other tasks competing for inclusion. The completed
+    task's own main-list row also correctly read "Due: Aug 16, 2026" (not
+    "Overdue: ..."), and the deleted task correctly still appeared in the
+    Trash screen with its title intact — proving deletion and the Overdue
+    exclusion don't fight each other.
+  - **D5 (Overdue order), verified against the exact step-12-issue-1 failure
+    shape (root A with 9 children C1..C9 at orders -1000..-9000, a root
+    sibling B at order -2000, both B and C9 given a due date):** the pure
+    `computeMainListOrderIndex` sorted the overdue pair `{B, C9}` as `[B,
+    C9]`, while sorting the SAME pair by raw `order` would give `[C9, B]` —
+    the wrong answer, reversed. Live in the DOM: the real main list rendered
+    `[B, TODAY, TOMORROW, A, C9, C8, ..., C1]` (via the real `renderMainView`/
+    `renderTasks`), and the real Overdue screen (via `renderOverdueView`/
+    `renderOverdue`) rendered its two rows in exactly `[B, C9]` — matching
+    the main list's real relative order, not raw `order`'s reversed one. A
+    regression check confirmed Focus (which shares the same
+    `computeMainListOrderIndex` call, now hoisted) still sorted `[B, C9]`
+    too, so the hoist didn't disturb step 12's own behavior.
+  - **D7 (age), verified two ways:** the pure `computeAgeLabel` against a
+    fixed synthetic "today" returned `"today"` for a task created today,
+    `"1 day old"` / `"5 days old"` for one and five days back respectively
+    (singular/plural correctly split), and `"age unknown"` (never `"NaN days
+    old"`) for both a literal `null` and a Firestore-Timestamp-shaped object
+    with no real value. Live in the DOM: a synthetic task created
+    2026-07-28, rendered through the real pipeline with the real system
+    clock (today = 2026-08-17 per this environment), showed exactly "20 days
+    old"; a task with `createdAt: null` showed "age unknown", never NaN.
+  - **D10 (inline editor + context menu), verified live with real clicks,
+    real right-clicks, and a real Escape keydown:** clicking a row's
+    due-display opened the `<input type="date">` in place (same node,
+    focused, pre-filled with the stored value formatted as `"2026-08-16"`).
+    A real, unrelated re-render (toggling "show completed") left the open
+    editor completely untouched — same DOM node, still the focused element,
+    value unchanged — while a DIFFERENT task's row updated normally in the
+    same pass, proving the `editingDueDate` guard discriminates per-row, not
+    globally. Escape correctly cancelled (interaction depth dropped from 1 to
+    0, display reverted to the last-saved value, not left showing the
+    discarded edit). The context menu on a due-date-less task showed "Set due
+    date" with "Clear due date" hidden; on a due-date-bearing task it showed
+    "Change due date" with "Clear due date" visible. Clicking "Set due date"
+    from the menu opened the inline editor on the SAME row the menu was
+    opened for (`taskMenu.dataset.context` correctly threaded through).
+    Three-way row independence (extending step 12's two-way D4 proof):
+    opening the date editor on a pinned, overdue task's FOCUS row left its
+    main-list row's due-display untouched and still in display mode
+    throughout an unrelated re-render, AND its separate Overdue-screen row
+    (a third independent node for the same task id) was completely
+    unaffected the whole time.
+  - **D9 (write path), verified as far as unsigned-in allows, matching the
+    exact substitute methodology steps 6–12 already established:** a real
+    `focusout` commit attempt on an open date editor, unsigned-in, left the
+    store byte-identical before/after (`enqueueMutation`'s `!currentUserId`
+    guard fires before any mutation, same proof shape as step 12's
+    analogous check) — and the display correctly resynced to the
+    last-saved value rather than showing the discarded edit. Separately,
+    replicating the focusout handler's exact commit logic
+    (`parseDateInputToLocalMidnight(rawValue) : null`, then
+    `{...currentTask, dueDate}`) against the real store produced a proper
+    local-midnight `Date` object for a set, and a literal `null` for a
+    clear (empty input) — the exact D9 write shapes. The read-path half of
+    "persists across reload" was also verified directly: writing a
+    Firestore-Timestamp-shaped `dueDate` (or `null`) straight into the store
+    (simulating exactly what a real `saveTask`-then-`refreshTasks` round
+    trip would leave behind) and re-rendering showed the new value
+    immediately ("Due: Sep 1, 2026" / "No due date"). The one thing this
+    does NOT cover — the actual Firestore write and refetch — is unverified,
+    same limitation as every mutation in every step above; see Assumed.
+  - Console had zero errors across the whole step-13 run, including after a
+    genuinely fresh, cache-busted reload (`fetch(url, {cache:"reload"})`
+    primed on every changed module before navigating) with the new code.
+    Every name step 13 added to `render.js`'s export list was cross-checked
+    against `app.js`'s import list (both directions, not just grepped for
+    existence).
 
 **Assumed (written and reasoned about, never exercised signed-in):**
 - Every path that actually reaches Firestore: create, save, soft-delete, and the
@@ -636,6 +839,30 @@ driving the real modules directly):**
   **not** evidence of a live defect once a later, successful navigation's own
   checks (dynamic-import exports, DOM state, interaction depth) all read
   correctly afterward.
+- **Every real Firestore call step 13 adds.** No `saveTask` call inside the
+  `focusout` handler's due-date commit branch, nor `handleClearDueDateClick`'s
+  body, has been run against Firestore — this session, like every step since
+  11, never set a fake signed-in uid. What was verified instead: the exact
+  *write payload* (`parseDateInputToLocalMidnight`/`null` producing the
+  correct `dueDate` value) via direct replication against the real store, the
+  *unsigned-in no-op* itself (byte-identical store before/after a real commit
+  attempt), and the *read-path* half of "persists across reload" (writing a
+  Timestamp-shaped value straight into the store and re-rendering, simulating
+  exactly what a real `saveTask`-then-`refreshTasks` round trip would leave
+  behind). Whether an actual `saveTask` call for a due date round-trips
+  through Firestore as a real Timestamp, and whether `fetchTasks`'s read
+  hands it back as a `.toDate()`-bearing object exactly the way
+  `timestampToDate` (render.js) expects, is unverified — same limitation as
+  every write path in every step above.
+- **The Overdue screen's own drag handle, "+ Subtask", "Delete", and "Move
+  out of Inbox" buttons were left fully live** — D4 says Overdue rows are
+  "exactly Focus's row shape," and Focus's rows already carry all of this
+  (step 12 never disabled them there either). This was a conscious choice
+  (see Decisions, D4), not something overlooked, but it was only reasoned
+  about, not driven end-to-end on the Overdue screen specifically (e.g.
+  dragging a row while the Overdue screen is the active view) — Focus's own
+  step-12 verification is the closest direct precedent for this exact
+  row-shape's interactive behavior.
 
 ## Decisions
 
@@ -1140,6 +1367,113 @@ driving the real modules directly):**
   though Trash isn't wired into `CONTEXT_MAPS` yet, since Trash rows carry
   no edit state today; adding it is designed to be a one-line addition, not
   another doubling, the day Trash rows grow inline editing.
+
+- **step 13 (D1, scope)** — the Overdue Alerts Screen ships in THIS step,
+  alongside plain due-date assignment and age display. Recurrence
+  (product-spec.md §5's other big bullet) stays entirely out — it's step 18's
+  own, later step, with no partial groundwork laid here.
+- **step 13 (D2)** — `dueDate` is a Firestore Timestamp at **local midnight**
+  of the due day. The `<input type="date">` value (`"YYYY-MM-DD"`) is parsed
+  with `new Date(year, month-1, day)` (`render.js`'s
+  `parseDateInputToLocalMidnight`) — never the string-constructor form
+  `new Date("YYYY-MM-DD")`, which the ES spec parses as UTC midnight and
+  therefore lands on the PREVIOUS calendar day in any negative-UTC-offset
+  timezone. Formatting back to the input reads local `getFullYear`/
+  `getMonth`/`getDate` (`formatDateForInput`) — never
+  `toISOString().slice(0,10)`, the same bug mirrored in reverse. Both
+  conversions live side by side in `render.js`, each commented with why the
+  naive alternative is wrong, specifically so they can never drift apart.
+  Verified with real computed values, not just reasoned about — see Verified.
+- **step 13 (D3)** — a task is overdue iff its due date's **local calendar
+  day** is strictly before **today's local calendar day** — computed via
+  `localMidnight(dueDate).getTime() < localMidnight(now).getTime()`
+  (`isOverdueTask`, render.js). Due TODAY is its own bucket, not overdue
+  (product-spec.md §6 treats them as distinct terms). Completed and deleted
+  tasks are never overdue, checked first and unconditionally, whatever their
+  stored `dueDate` says — this is why a task that WAS overdue before being
+  completed or deleted correctly drops out of the Overdue screen without
+  needing `dueDate` itself to be touched by completion or deletion.
+- **step 13 (D4)** — the Overdue screen is a THIRD `currentView` panel
+  (`views.overdue`/`renderOverdueView`, app.js), following step 9's Trash
+  view-switching precedent exactly — never a fourth section folded into the
+  main view's single `renderTasks` call the way Focus (step 12) is. Its rows
+  are nonetheless full task rows built from the same `createTaskElement`/
+  `updateTaskElement` pair every other row uses (checkbox, title/note/
+  due-date inline edit, drag handle, action buttons) — "exactly Focus's row
+  shape," per this step's own brief — never Trash's much simpler
+  label-plus-button shape, since Trash rows carry no edit state and Overdue
+  rows need the due-date editor. This is a deliberate combination of two
+  existing precedents (Trash's screen-level view-switching + Focus's
+  full-row rendering), not a new third pattern. The screen's action buttons
+  (drag handle, +Subtask, Delete, Move out of Inbox) were left fully live,
+  matching Focus's own precedent of not disabling them — see the Assumed
+  note on this for what's reasoned-about versus actually driven.
+- **step 13 (D5)** — Overdue's order is the exact same `mainListOrderIndex`
+  mechanism step 12's issue-1 fix introduced for Focus — each task's index in
+  the real depth-first RENDER position the tree containers (Inbox, then main
+  list) produce — never raw `order` (only meaningful within one sibling
+  group) and never a second, independently-computed ordering rule. Hoisted
+  into `render.js`'s own exported `computeMainListOrderIndex`, which
+  `renderTasks` now calls internally too (previously this math lived inline
+  inside `renderTasks`), so Focus and Overdue provably share one
+  implementation rather than two copies that could silently diverge later.
+  Verified against the exact scenario step 12's issue 1 got wrong (two
+  overdue tasks under different parents, where raw `order` gives the reverse
+  answer) — see Verified.
+- **step 13 (D6)** — `render.js`'s `CONTEXT_MAPS` grew a third entry,
+  `overdue: overdueEntriesByTaskId` — literally the one-line addition the
+  steps-11–12-review-round issue-2 fix (the `context`-parameterized edit-mode
+  API) was built to make possible. No accessor was doubled; `beginTitleEdit`/
+  `endTitleEdit`/etc. needed zero changes to support the third context, only
+  their callers in app.js needed the row-context lookup extended (see D10's
+  `contextForRow` below).
+- **step 13 (D7)** — task age is derived from `createdAt` on every render
+  (`computeAgeLabel`, render.js) — never stored, no new field, no migration.
+  Measured in **whole local calendar days** (today's local midnight minus the
+  creation day's local midnight, divided by a day and floored), matching D3's
+  calendar-day framing rather than a rolling 24-hour elapsed-time measure —
+  "today" means "created today," not "created less than 24 hours ago." A
+  `createdAt` that hasn't resolved locally yet (a doc whose `serverTimestamp()`
+  the local snapshot hasn't caught up to) renders as the literal string
+  `"age unknown"` — never `"NaN days old"`.
+- **step 13 (D8, not really a decision)** — no change to `firestore.rules` or
+  `firestore.indexes.json`: reading `isValidTask()` in full confirmed it never
+  mentions `dueDate`, so every write this step adds already passed rules
+  before this step existed. Nothing about the schema's validation changed.
+- **step 13 (D9)** — setting or clearing a due date is a whole-document
+  `saveTask(uid, {...currentTask, dueDate})` routed through `enqueueMutation`,
+  re-reading the task from `getTasks()` at run time — never `updateDoc`,
+  matching every other mutation in this codebase. Clearing (an empty
+  `<input type="date">` value) writes `dueDate: null` explicitly, not
+  `undefined` (which `setDoc` would reject) and not simply omitting the
+  field (which would leave the previous value's stale Timestamp in place,
+  since every write in this app is whole-document).
+- **step 13 (D10)** — the UI affordance is BOTH of the two established
+  patterns at once, not a choice between them: (a) an **inline editor on the
+  row** — clicking a due-date display (a new `.task-item__due-display`/
+  `.task-item__due-input` pair, sharing the exact display/input-toggle shape
+  and `beginInteraction`/`endInteraction` guard step 2's title/note editing
+  already established) opens the native `<input type="date">` in place, and
+  (b) the **context menu** gained two items: "Set due date"/"Change due
+  date" (label toggles per whether a due date already exists, same pattern
+  as step 12's Pin/Unpin) which opens that SAME inline editor — not a
+  parallel implementation — and "Clear due date" (shown only when a due
+  date is set), a one-shot immediate write with no editor step, the same
+  shape as step 12's `handleTogglePinClick`. Justification for two menu
+  items instead of one: "open the editor" and "clear immediately" are
+  different actions with different results, unlike Pin/Unpin's true
+  toggle-between-two-states shape, so collapsing them into one label would
+  hide one of the two actions. The date editor commits on blur only
+  (matching the note field's rule, not the title field's Enter-commits
+  rule) — Enter is treated as a commit-via-blur for convenience, but the
+  primary commit path is losing focus, consistent with how a native date
+  picker's own interaction model works (pick a date, click/tab away).
+  `contextForRow(li)`/`fieldSuffixForContext(context)` (app.js) generalize
+  step 12's `isFocusRow` boolean to all three row-contexts at every call
+  site that needs to know which of a task's independent rows an event
+  belongs to (click-to-edit, focusout commit, and — new for this step —
+  which row a context-menu-opened editor should target, threaded through
+  via `taskMenu.dataset.context`).
 
 ## Open items (not steps)
 

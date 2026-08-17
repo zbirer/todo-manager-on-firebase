@@ -47,9 +47,13 @@
 // (`trashEntriesByTaskId` below), Focus gets its own separate Map, so its own
 // cleanup pass can never delete — or be broken by — an entry the main pass
 // still needs. Focus is also flat (D2: a hand-picked set, not a subtree), so
-// it skips flattenTree/buildTree entirely and just sorts with the exact same
-// sibling comparator (`sortTasks`) the main list uses (D3), rendering every
-// row at depth 0 — Focus carries no indentation, it isn't a view of the tree.
+// it never renders at any depth but 0 — Focus carries no indentation, it
+// isn't a view of the tree. D3 originally ordered Focus with the same raw
+// `order`-comparing `sortTasks` the main list's siblings use; issue 1's
+// review superseded that (see PROGRESS.md's superseding entry and
+// renderTasks's own comment below) — `order` is only comparable within one
+// sibling group, so a cross-group traversal-order index built from the tree
+// containers' own `flattenTree` output is what Focus now sorts by instead.
 
 import { buildTree, depthOf } from "./taskTree.js";
 
@@ -140,7 +144,30 @@ export function renderTasks(containers, focusContainer, onEditCancelled) {
     return { element, flattened };
   });
 
-  const focusTasks = focusContainer ? sortTasks(focusContainer.tasks) : [];
+  // Issue 1 fix (supersedes step 12's D3 — see PROGRESS.md's superseding
+  // entry): "the same order they hold in the main list" (product-spec.md
+  // §7) means the actual depth-first RENDER order the tree containers above
+  // just produced, not a second, cross-group-meaningless comparison on the
+  // raw `order` field — `order` is a fractional index scoped per SIBLING
+  // GROUP (step 1's decision), so its magnitude carries no meaning once two
+  // pinned tasks come from different parents. Reusing `perContainer`'s
+  // already-computed `flattened` arrays (rather than a second traversal)
+  // gives every visible task's position in that same depth-first order;
+  // containers are walked in the exact [Inbox, main list] sequence app.js
+  // always passes them in, so a pinned Inbox task and a pinned main-list
+  // task still land in one single, well-defined relative order.
+  const mainListOrderIndex = new Map();
+  for (const { flattened } of perContainer) {
+    for (const { task } of flattened) {
+      if (!mainListOrderIndex.has(task.id)) mainListOrderIndex.set(task.id, mainListOrderIndex.size);
+    }
+  }
+  const focusTasks = focusContainer
+    ? [...focusContainer.tasks].sort(
+        (a, b) =>
+          (mainListOrderIndex.get(a.id) ?? Infinity) - (mainListOrderIndex.get(b.id) ?? Infinity)
+      )
+    : [];
   const focusSeenIds = new Set(focusTasks.map((task) => task.id));
 
   for (const { flattened } of perContainer) {

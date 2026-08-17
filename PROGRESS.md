@@ -1102,6 +1102,28 @@ driving the real modules directly):**
   overruled action] visible rather than letting it appear to work and then
   snap back." Previously every refusal except the depth cap returned
   silently, and even the depth cap's own alert never triggered a refresh.
+- **steps 11–12 review round (issue 1) — SUPERSEDES step 12's D3.** D3
+  ordered Focus with the same raw-`order`-comparing `sortTasks`/
+  `compareSiblings` the main list's SIBLINGS use, and called cross-group
+  order "arbitrary but stable until step 16." That was wrong: `order` is a
+  fractional index scoped PER SIBLING GROUP (step 1's decision), independently
+  decremented per insertion within that group, so its magnitude carries no
+  meaning across two different parents — concretely, a root `A` with 9
+  children (the 9th's `order` around -9000, decremented once per insertion)
+  and a root `B` created after `A` (`order` around -2000) renders the main
+  list as `[B, A, C1..C9]`, but sorting the pinned set `{B, C9}` by raw
+  `order` put `C9` (-9000) before `B` (-2000) — the reverse of the main
+  list, directly violating product-spec.md §7's "Pinned tasks appear in the
+  same order they hold in the main list."
+  **New rule:** Focus is sorted by each pinned task's index in the actual
+  depth-first RENDER order the tree containers (Inbox, then main list, in
+  that order) already produce via `flattenTree` — reusing that
+  already-computed output (`renderTasks`'s own `perContainer`), not a second
+  traversal. This still inherits step 16's future comparator for free, since
+  `flattenTree` runs through `compareSiblings` — the exact property D3 was
+  trying to preserve, just implemented on the wrong (cross-group) input.
+  Verified against the concrete failure case above: Focus order now matches
+  the flattened main-list order exactly.
 
 ## Open items (not steps)
 

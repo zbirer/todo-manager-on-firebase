@@ -12,6 +12,7 @@ import {
   doc,
   addDoc,
   setDoc,
+  deleteDoc,
   getDocs,
   serverTimestamp,
   query,
@@ -211,4 +212,20 @@ export const softDeleteTask = async (userId, task, deletedByCascadeFrom = null) 
     deletedAt: serverTimestamp(),
     deletedByCascadeFrom,
   });
+};
+
+// 5. Purge: permanently remove a task document with a real deleteDoc. This is
+// the ONLY deleteDoc call in the entire codebase — every other deletion in
+// this app is soft (softDeleteTask above), by design, so a second hard-delete
+// path appearing anywhere else would be a genuine bug, not an alternative
+// feature. It exists solely to enforce the Trash's 50-item cap
+// (product-spec.md §3: "the trash holds the 50 most recently deleted tasks;
+// beyond that, the oldest fall out and are gone for good"). Once this runs,
+// the task is gone for good — there is no soft-un-delete path back from a
+// purge the way there is from softDeleteTask above. app.js's cascade-delete
+// handler (step 9) is the only caller, and only calls it for documents its
+// own eviction math has already picked as the oldest past the cap.
+export const purgeTask = async (userId, taskId) => {
+  const taskRef = doc(db, "users", userId, "tasks", taskId);
+  await deleteDoc(taskRef);
 };

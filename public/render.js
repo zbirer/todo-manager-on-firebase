@@ -195,6 +195,22 @@ function createTaskElement(taskId) {
   const li = document.createElement("li");
   li.dataset.taskId = taskId;
 
+  // Step 10: a dedicated drag handle, never the whole row. The row already
+  // owns click-to-edit (step 2) and long-press-opens-menu (step 8); hijacking
+  // the whole row for dragging too would fight both of those gestures, since
+  // a pointerdown anywhere on the row would then have to guess which of three
+  // things the user meant. app.js's pointerdown listener checks for this
+  // exact class before it decides between starting a drag and arming the
+  // long-press timer. `touch-action: none` (index.html) is what makes that
+  // decision stick on a touch device — without it, the browser's own
+  // touch-scroll gesture can steal the pointer sequence out from under our
+  // pointermove handler before app.js ever sees it move.
+  const dragHandle = document.createElement("span");
+  dragHandle.className = "task-item__drag-handle";
+  dragHandle.setAttribute("aria-label", "Drag to reorder");
+  dragHandle.textContent = "⠿";
+  li.appendChild(dragHandle);
+
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
   checkbox.className = "task-item__checkbox";
@@ -270,6 +286,7 @@ function createTaskElement(taskId) {
 
   return {
     li,
+    dragHandle,
     checkbox,
     label,
     titleInput,
@@ -477,4 +494,79 @@ function renderNoteInto(container, text) {
       container.appendChild(document.createElement("br"));
     }
   });
+}
+
+// --- Trash rendering ---------------------------------------------------
+// Step 9: the Trash is a deliberately FLAT list — never a tree — because the
+// 50-item cap counts individual deleted documents (product-spec.md §3:
+// "Tasks are counted individually, not per deletion"), and step 8 already
+// made sure a cascade delete writes each descendant as its own document for
+// exactly this reason. Rendering the Trash as a tree would visually collapse
+// a cascade's several documents back into what looks like one entry, hiding
+// the very count the cap acts on. app.js decides the sort order (newest
+// deletion first) and hands this an already-sorted array; this function only
+// turns that array into DOM, the same "app.js owns *when*, render.js owns
+// *how*" split the main list uses.
+//
+// A separate, much simpler Map from entriesByTaskId above — trash rows carry
+// no edit state to preserve across a refresh, no checkbox, no hierarchy
+// depth, and no drag handle (reordering the Trash isn't a thing). Reusing
+// the main list's entry shape would mean carrying a pile of fields that
+// never apply here.
+const trashEntriesByTaskId = new Map();
+
+export function renderTrash(container, tasks) {
+  const seenIds = new Set(tasks.map((task) => task.id));
+
+  for (const task of tasks) {
+    let entry = trashEntriesByTaskId.get(task.id);
+    if (!entry) {
+      entry = createTrashElement(task.id);
+      trashEntriesByTaskId.set(task.id, entry);
+    }
+    updateTrashElement(entry, task);
+  }
+
+  // Same cleanup rule as the main list: drop entries for tasks that left the
+  // rendered set (restored, or purged past the cap) so the Map doesn't grow
+  // forever. Trash rows hold no open edit/interaction, so there is nothing
+  // to warn a caller about on the way out, unlike renderTasks's
+  // onEditCancelled above.
+  for (const id of trashEntriesByTaskId.keys()) {
+    if (!seenIds.has(id)) trashEntriesByTaskId.delete(id);
+  }
+
+  reconcileChildren(container, tasks.map((task) => trashEntriesByTaskId.get(task.id).li));
+}
+
+// The Restore button carries no listener of its own — same event-delegation
+// rule as every other per-row button in this app (see the main list's
+// moveOutButton/addSubtaskButton/deleteButton above). app.js's delegated
+// click listener on #task-section recognizes `.trash-item__restore-btn` and
+// dispatches to its own restore handler.
+function createTrashElement(taskId) {
+  const li = document.createElement("li");
+  li.className = "trash-item";
+  li.dataset.taskId = taskId;
+
+  const label = document.createElement("span");
+  label.className = "trash-item__label";
+  label.dir = "auto"; // same mixed Hebrew/English reasoning as the main list's title (product-spec.md §1)
+  li.appendChild(label);
+
+  const restoreButton = document.createElement("button");
+  restoreButton.type = "button";
+  restoreButton.className = "trash-item__restore-btn";
+  restoreButton.textContent = "Restore";
+  restoreButton.setAttribute("aria-label", "Restore task");
+  li.appendChild(restoreButton);
+
+  return { li, label, restoreButton };
+}
+
+// Nothing here is ever mid-edit, so unlike updateTaskElement there is no
+// "leave it alone while editing" branch to worry about — every field is
+// always safe to re-sync from `task` on every pass.
+function updateTrashElement(entry, task) {
+  entry.label.textContent = task.title;
 }

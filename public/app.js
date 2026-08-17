@@ -5,7 +5,7 @@
 // DOM.
 
 import { logInWithGoogle, logOut, monitorAuthState } from "./auth.js";
-import { addTask, fetchTasks, saveTask, softDeleteTask } from "./taskService.js";
+import { addTask, fetchTasks, saveTask, softDeleteTask, purgeTask } from "./taskService.js";
 import { buildTree, depthOf, descendantIds } from "./taskTree.js";
 import {
   getTasks,
@@ -21,6 +21,8 @@ import {
 } from "./store.js";
 import {
   renderTasks,
+  renderTrash,
+  sortTasks,
   beginTitleEdit,
   endTitleEdit,
   getTitleInputValue,
@@ -37,6 +39,22 @@ import {
 const TITLE_MAX_LENGTH = 1000;
 const NOTE_MAX_LENGTH = 10000;
 const TAGS_MAX_COUNT = 50;
+
+// Step 9 (Trash): product-spec.md §3 — "the trash holds the 50 most recently
+// deleted tasks; beyond that, the oldest fall out and are gone for good...
+// Tasks are counted individually, not per deletion." A count, not a time
+// limit, so a rarely-used trash keeps its contents indefinitely.
+const TRASH_CAP = 50;
+
+// Step 10 (manual reorder): repeated `(prev.order + next.order) / 2`
+// midpoints halve the gap between two neighbours every time something is
+// dropped between them, and float precision runs out eventually. Below this
+// gap, the midpoint would round to a value equal to (or indistinguishable
+// from) one of its neighbours, which would make sibling order silently
+// non-deterministic from then on — two tasks tied on `order` sort however
+// the JS engine's sort happens to leave equal elements, not however the user
+// last dragged them. See computeReorderOrder below for what happens instead.
+const ORDER_RENUMBER_EPSILON = 1e-6;
 
 // Extracts #tag / @context tokens from a title string, in the order they
 // appear. Shared by the add-task submit handler and the title-edit commit
@@ -80,6 +98,14 @@ const inboxList = document.getElementById("inbox-list");
 const showCompletedToggle = document.getElementById("show-completed-toggle");
 const taskMenu = document.getElementById("task-menu");
 const taskMenuMoveOutItem = taskMenu.querySelector('[data-action="move-out"]');
+
+// Step 9: the two view panels and the buttons that switch between them.
+const mainView = document.getElementById("main-view");
+const trashView = document.getElementById("trash-view");
+const trashBtn = document.getElementById("trash-btn");
+const trashBackBtn = document.getElementById("trash-back-btn");
+const trashCountText = document.getElementById("trash-count");
+const trashList = document.getElementById("trash-list");
 
 // 1b. Task context menu (step 8) — right-click or long-press on a row.
 // `taskMenu` is one shared element (declared in index.html, outside both
@@ -156,11 +182,31 @@ function openTaskMenuForTask(taskId, x, y) {
   beginInteraction(); // holds off the 5-minute refresh while the menu is open
 }
 
-// 2. View dispatch table. Only `main` exists in step 1 — this is the
-// scaffold later steps (trash, settings) register into, not a router yet.
+// 2. View dispatch table. Step 1 left only `main` here as a scaffold; step 9
+// is the first thing to register a second entry. `currentView` plus this
+// object is deliberately not a router — no hash change, no history entry,
+// no bookmarkable per-screen URL — because the plan for this step is exactly
+// "a currentView string plus that dispatch object", and a two-screen app has
+// no back/forward stack worth building.
+let currentView = "main";
+
 const views = {
   main: renderMainView,
+  trash: renderTrashView,
 };
+
+// Switches which of the two panels is visible and renders it fresh. Used by
+// the Trash/Back buttons below and by sign-out (which must not leave the
+// Trash panel showing under a "please sign in" message for the next user).
+function switchView(view) {
+  currentView = view;
+  mainView.hidden = view !== "main";
+  trashView.hidden = view !== "trash";
+  views[view]();
+}
+
+trashBtn.addEventListener("click", () => switchView("trash"));
+trashBackBtn.addEventListener("click", () => switchView("main"));
 
 function renderMainView() {
   const showCompleted = showCompletedToggle.checked;
@@ -190,6 +236,64 @@ function renderMainView() {
   );
 }
 
+// Converts a task's `deletedAt` into a millisecond number safe to compare
+// with `<`/`>`, or `null` when there isn't one to compare — either because
+// the field was never set (a doc soft-deleted before step 3 added it) or
+// because it's still a locally-unresolved `serverTimestamp()` sentinel that
+// hasn't round-tripped through a read yet. `null` is always treated as
+// "oldest", both for display (sorts last, per this step's plan) and for
+// eviction (purged first, being indistinguishable from "deleted longest
+// ago" once there is no timestamp to say otherwise).
+function deletedAtMillis(task) {
+  return typeof task.deletedAt?.toMillis === "function" ? task.deletedAt.toMillis() : null;
+}
+
+// Sorts deleted tasks newest-deletion-first for the Trash screen. Ties
+// (including two `null`s) break on `id` so the order is stable across
+// refreshes — without a tie-break, two documents sharing an exact
+// `deletedAt` (or both missing it) would be free to swap places on every
+// re-render, which would look like the list randomly shuffling itself.
+//
+// Verification-only export (same precedent as store.js's getInteractionDepth
+// and the openEdits/menuOpen idempotent-close pattern it documents) — this
+// project has no test runner, so a caller driving this module directly needs
+// a way to exercise the Trash's sort/eviction math without a live Firestore
+// connection, which browser-only unsigned-in verification can never provide.
+export function compareTrashNewestFirst(a, b) {
+  const aMillis = deletedAtMillis(a);
+  const bMillis = deletedAtMillis(b);
+  if (aMillis == null && bMillis == null) return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  if (aMillis == null) return 1; // null sorts last
+  if (bMillis == null) return -1;
+  if (aMillis !== bMillis) return bMillis - aMillis; // descending
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+// Step 9: the Trash is a FLAT list — every deleted document is its own row,
+// never grouped back into the tree it was cascade-deleted from — because
+// that is exactly what the 50-item cap counts (see render.js's renderTrash
+// comment). Sorted newest-deletion-first, per this step's plan.
+function renderTrashView() {
+  const trashedTasks = getTasks().filter((task) => task.deleted).sort(compareTrashNewestFirst);
+  trashCountText.textContent = `Trash — ${trashedTasks.length} of ${TRASH_CAP}`;
+  renderTrash(trashList, trashedTasks);
+}
+
+// Picks which deleted documents to permanently purge once the Trash holds
+// more than `cap` — the oldest ones past the cap, exactly `product-spec.md`
+// §3's rule ("beyond that, the oldest fall out and are gone for good").
+// Pure and side-effect-free so it can be exercised directly (same
+// verification-only reasoning as compareTrashNewestFirst above): given the
+// full post-delete task list, it returns the ids handleDeleteClick's queued
+// mutation should call `purgeTask` on, without touching Firestore itself.
+export function selectPurgeCandidates(allTasks, cap) {
+  const trashedOldestFirst = allTasks
+    .filter((task) => task.deleted)
+    .sort((a, b) => -compareTrashNewestFirst(a, b));
+  const purgeCount = Math.max(0, trashedOldestFirst.length - cap);
+  return trashedOldestFirst.slice(0, purgeCount).map((task) => task.id);
+}
+
 // 3. Refetch-and-render: the single refresh path every mutation and the
 // 5-minute timer both funnel through (see store.js's "one refresh strategy").
 async function refreshTasks() {
@@ -198,7 +302,10 @@ async function refreshTasks() {
   try {
     const tasks = await fetchTasks(userId);
     setTasks(tasks);
-    views.main();
+    // Re-render whichever panel is actually on screen — step 9 added a
+    // second one (Trash), and every mutation (including a restore performed
+    // FROM the Trash) still funnels through this one refresh path.
+    views[currentView]();
     // Step 8: an open menu belongs to one specific task. If that task is no
     // longer live in the freshly-fetched set — deleted from elsewhere, or by
     // this very refresh's own cascade — the menu it was opened for no longer
@@ -381,6 +488,15 @@ taskSection.addEventListener("click", async (event) => {
   const taskId = event.target.closest("li")?.dataset.taskId;
   if (!taskId) return;
 
+  // Step 9: Restore lives on a Trash row, not a main-list row, but the
+  // Trash's <ul> sits inside #task-section too (see index.html's comment on
+  // #trash-view), so it's reached through this same delegated listener
+  // rather than a second one.
+  if (event.target.closest(".trash-item__restore-btn")) {
+    await handleRestoreClick(taskId);
+    return;
+  }
+
   if (event.target.closest(".task-item__move-out-btn")) {
     await handleMoveOutOfInboxClick(taskId);
     return;
@@ -446,10 +562,27 @@ async function handleDeleteClick(taskId) {
     (id) => !tree.byId.get(id).deleted
   ).length;
 
-  const confirmMessage =
+  // Step 9: this deletion is about to add (1 + liveDescendantCount) new
+  // documents to the Trash — the clicked task plus every live descendant the
+  // cascade below sweeps up with it. If that pushes the total past the
+  // 50-item cap, the oldest documents beyond it get permanently purged. The
+  // plan is explicit that a silent purge is a defect, so the confirm below
+  // has to name the exact count BEFORE anything is written — this is a
+  // best-effort projection from the last fetch (the same honesty level as
+  // `liveDescendantCount` above, which has the same limitation); the queued
+  // mutation re-derives the real, authoritative count from a fresh fetch
+  // right before it actually purges anything.
+  const currentTrashCount = getTasks().filter((t) => t.deleted).length;
+  const projectedTrashCount = currentTrashCount + 1 + liveDescendantCount;
+  const purgeCount = Math.max(0, projectedTrashCount - TRASH_CAP);
+
+  let confirmMessage =
     liveDescendantCount === 0
       ? `Delete "${task.title}"?`
       : `Delete "${task.title}" and its ${liveDescendantCount} sub-task${liveDescendantCount === 1 ? "" : "s"}?`;
+  if (purgeCount > 0) {
+    confirmMessage += ` The trash is full: this will permanently purge ${purgeCount} of the oldest trashed item${purgeCount === 1 ? "" : "s"}. This cannot be undone.`;
+  }
   if (!confirm(confirmMessage)) return;
 
   await enqueueMutation(async () => {
@@ -479,9 +612,92 @@ async function handleDeleteClick(taskId) {
         if (!current || current.deleted) continue;
         await softDeleteTask(currentUserId, current, taskId);
       }
+
+      // Step 9's 50-item cap. The local store (`getTasks()`) is never
+      // optimistically mutated — per this app's one-refresh-strategy rule,
+      // it only changes via refreshTasks's own fetchTasks/setTasks — so it
+      // still reflects the PRE-delete state even though the soft-deletes
+      // above just landed in Firestore. A dedicated fetch here is the only
+      // way to see the count the cap actually has to act against, which is
+      // what this step's plan calls for ("the count it evicts against is the
+      // real post-delete count"), rather than reusing the confirm's
+      // best-effort projection for the actual eviction.
+      const postDeleteTasks = await fetchTasks(currentUserId);
+      const purgeIds = selectPurgeCandidates(postDeleteTasks, TRASH_CAP);
+      for (const id of purgeIds) {
+        await purgeTask(currentUserId, id);
+      }
     } catch (error) {
       console.error("Failed to delete task:", error);
       alert("Could not delete the whole cascade. The list has been refreshed to show what actually saved.");
+    } finally {
+      await refreshTasks();
+    }
+  });
+}
+
+// Step 9: restore a task and, symmetrically, every task its own deletion
+// cascade swept up with it — the exact same global-filter pattern step 7
+// uses to reverse a cascade-complete via `closedByCascadeFrom` (see
+// PROGRESS.md's step 7 decision for why this has to be a stamp match, not a
+// tree walk: the stamp is what recorded cascade membership at delete time,
+// and a walk from the CURRENT parentId could disagree with it the moment
+// step 11 (drag-to-reparent) exists). One queued mutation, one refresh.
+//
+// Restoring into a still-deleted parent: `parentId` is deliberately left
+// exactly as it was. taskTree.js's orphan-is-root rule (buildTree treats a
+// task whose parent isn't in the live set as a root) means this task simply
+// renders at the top level until its parent is restored too — this function
+// warns about that in the confirm and then does it, per this step's plan.
+// It does NOT walk up and resurrect the ancestor chain: the user asked to
+// restore what they clicked, and reviving an unrelated ancestor they never
+// asked for would be a second, uninvited restore riding along on this one.
+async function handleRestoreClick(taskId) {
+  const userId = getCurrentUserId();
+  const task = getTasks().find((t) => t.id === taskId);
+  if (!userId || !task || !task.deleted) return;
+
+  if (task.parentId != null) {
+    const parentTask = getTasks().find((t) => t.id === task.parentId);
+    if (parentTask && parentTask.deleted) {
+      const proceed = confirm(
+        `"${task.title}"'s parent is still in the trash. Restoring it now will place it at the top level until the parent is restored too. Restore anyway?`
+      );
+      if (!proceed) return;
+    }
+  }
+
+  await enqueueMutation(async () => {
+    const currentUserId = getCurrentUserId();
+    const currentTask = getTasks().find((t) => t.id === taskId);
+    if (!currentUserId || !currentTask || !currentTask.deleted) return; // already restored, or gone
+
+    // Global filter over every task carrying this stamp — not a subtree
+    // walk from `taskId`'s current position, for the same reason step 7's
+    // reopen set isn't a walk either (see the comment above this function).
+    const toRestore = getTasks().filter((t) => t.deletedByCascadeFrom === taskId);
+
+    try {
+      // The clicked task first, so the row the user actually pressed
+      // reflects their action even if the rest of the restore fails partway
+      // — mirrors step 6/7/8's "clicked task first" ordering.
+      await saveTask(currentUserId, {
+        ...currentTask,
+        deleted: false,
+        deletedAt: null,
+        deletedByCascadeFrom: null,
+      });
+      for (const current of toRestore) {
+        await saveTask(currentUserId, {
+          ...current,
+          deleted: false,
+          deletedAt: null,
+          deletedByCascadeFrom: null,
+        });
+      }
+    } catch (error) {
+      console.error("Failed to restore task:", error);
+      alert("Could not restore the whole cascade. The list has been refreshed to show what actually saved.");
     } finally {
       await refreshTasks();
     }
@@ -775,6 +991,253 @@ function cancelLongPress() {
   longPressStart = null;
 }
 
+// Step 10: manual reorder via a dedicated drag handle. Pointer events
+// (pointerdown/pointermove/pointerup), not the HTML5 drag-and-drop API —
+// step 11 (drag-to-reparent) is a hand-rolled pointer drag built directly on
+// top of this same mechanism, so this deliberately isn't the browser's own
+// DnD from the start.
+//
+// `drag` holds everything the gesture needs, or is `null` when no drag is in
+// progress:
+//   - taskId / parentId / inInbox: identity of the task being moved, and
+//     which sibling group it belongs to. Siblings are matched on BOTH
+//     parentId and inInbox, not parentId alone — a root-level Inbox task and
+//     a root-level main-list task both have `parentId: null`, but they are
+//     NOT siblings; they render in two different containers because a
+//     subtask always inherits its parent's inInbox (step 5's decision), so
+//     the partition only actually needs disambiguating at the root. Every
+//     non-root task's siblings already share both fields automatically
+//     (inherited from the same parent), so this check is a no-op there and
+//     only matters at the root.
+//   - otherSiblingIds: every OTHER live sibling's id, ascending by `order` —
+//     i.e. the exact order render.js's sortTasks/compareSiblings already
+//     renders them in. Used to find neighbours by array position.
+//   - target: `{ beforeId, afterId }` (either may be null, meaning "top of
+//     the group" / "bottom of the group") once the pointer is hovering a
+//     valid drop position, or `null` when it isn't hovering one yet, or is
+//     hovering an invalid one (product-spec.md's "a drag can be overruled...
+//     the interface should make that visible rather than letting a drag
+//     appear to work and then snap back" — an invalid target simply never
+//     becomes a valid one, rather than showing a misleading indicator).
+//   - handleEl / pointerId: needed to release pointer capture on drop/cancel.
+let drag = null;
+
+// Idempotent-close guard for the drag's interaction, same pattern as
+// `openEdits` (step 2) and `menuOpen` (step 8) — see either of those for why
+// this matters: a double decrement here would release a DIFFERENT, still-open
+// interaction's deferred refresh, not just this drag's own.
+let dragInteractionOpen = false;
+
+function closeDragInteraction() {
+  if (!dragInteractionOpen) return; // already closed via the other path
+  dragInteractionOpen = false;
+  endInteraction();
+}
+
+// One shared drop-indicator element, moved (never rebuilt) into whichever
+// <ul> the drag is currently over — the same "single shared element" pattern
+// step 8's task menu uses for the same reason: something that lived inside
+// #inbox-list or #task-list could be torn down by an unrelated refresh while
+// still in use. In practice no refresh CAN land mid-drag (the interaction
+// guard above blocks the 5-minute timer, and nothing else calls
+// refreshTasks() until the drop itself), but building it the same defensive
+// way costs nothing and keeps the two patterns consistent.
+const dropIndicator = document.createElement("li");
+dropIndicator.className = "drop-indicator";
+
+function showDropIndicator(referenceLi, before) {
+  const parent = referenceLi.parentElement;
+  if (before) parent.insertBefore(dropIndicator, referenceLi);
+  else parent.insertBefore(dropIndicator, referenceLi.nextSibling);
+}
+
+// Fully detaches the indicator rather than just hiding it, so it can never
+// linger as a stray child for some later renderTasks call to have to
+// reconcile around.
+function hideDropIndicator() {
+  dropIndicator.remove();
+}
+
+function beginDrag(taskId, event, handleEl) {
+  if (drag) return; // defensive: pointer capture below should make a second concurrent drag impossible
+  const task = getTasks().find((t) => t.id === taskId);
+  if (!task || task.deleted) return;
+
+  const otherSiblingIds = sortTasks(
+    getTasks().filter(
+      (t) => !t.deleted && t.id !== taskId && t.parentId === task.parentId && t.inInbox === task.inInbox
+    )
+  ).map((t) => t.id);
+
+  drag = {
+    taskId,
+    parentId: task.parentId,
+    inInbox: task.inInbox,
+    otherSiblingIds,
+    target: null,
+    handleEl,
+    pointerId: event.pointerId,
+  };
+
+  dragInteractionOpen = true;
+  beginInteraction(); // held for the drag's whole duration — keeps the 5-minute refresh off the DOM mid-gesture
+
+  try {
+    handleEl.setPointerCapture(event.pointerId);
+  } catch {
+    // Some synthetic/test environments don't implement pointer capture;
+    // the drag still works via the delegated listeners below, just without
+    // the guarantee that a fast pointer stays "captured" by the handle.
+  }
+}
+
+// Re-evaluates the drop target on every pointermove. `document.elementFromPoint`
+// (not `event.target`) is used deliberately: pointer capture means
+// `event.target` stays pinned to the handle for the whole gesture, but what
+// we need here is whatever row is actually under the cursor right now.
+function updateDragTarget(event) {
+  const elementUnderPointer = document.elementFromPoint(event.clientX, event.clientY);
+  // `li[data-task-id]` never matches the drop indicator itself (it carries no
+  // such attribute), so hovering exactly over the thin indicator line falls
+  // straight into the `!hoveredLi` branch below and is treated the same as
+  // hovering empty space between rows.
+  const hoveredLi = elementUnderPointer?.closest("li[data-task-id]");
+  const hoveredId = hoveredLi?.dataset.taskId;
+
+  if (!hoveredLi || hoveredId === drag.taskId) {
+    // Nothing new to decide: not over a real row (including the indicator
+    // itself), or over the dragged row's own (visually stationary — this app
+    // never live-reorders the DOM mid-drag) element. Leave whatever
+    // target/indicator already exists alone rather than flicker it invalid
+    // on every small jitter of the pointer.
+    return;
+  }
+
+  if (!drag.otherSiblingIds.includes(hoveredId)) {
+    // Siblings only (step 10's plan, product-spec.md's "manual dragging is
+    // the tie-breaker... within a priority level" rule that step 16 will
+    // build on) — re-parenting is step 11, not this one. An invalid position
+    // shows no indicator at all, so the drag never "appears to work" over a
+    // spot it can't actually land on.
+    drag.target = null;
+    hideDropIndicator();
+    return;
+  }
+
+  const rect = hoveredLi.getBoundingClientRect();
+  const before = event.clientY < rect.top + rect.height / 2;
+  const idx = drag.otherSiblingIds.indexOf(hoveredId);
+  const beforeId = before ? (idx > 0 ? drag.otherSiblingIds[idx - 1] : null) : hoveredId;
+  const afterId = before ? hoveredId : (idx < drag.otherSiblingIds.length - 1 ? drag.otherSiblingIds[idx + 1] : null);
+
+  drag.target = { beforeId, afterId };
+  showDropIndicator(hoveredLi, before);
+}
+
+// Computes the fractional-index `order` a task should get when dropped
+// between `prevTask` and `nextTask` (either may be `null`, meaning "top of
+// the group" / "bottom of the group" respectively) — step 10's plan, exactly:
+//   top    -> min(siblingOrders) - 1000   (nextTask.order IS that minimum)
+//   bottom -> max(siblingOrders) + 1000   (prevTask.order IS that maximum)
+//   between -> the midpoint
+// Returns `{ renumber: true }` instead of a value when the gap between
+// `prevTask` and `nextTask` has been halved so many times by repeated
+// midpoint math that it's fallen below ORDER_RENUMBER_EPSILON — silently
+// writing a value indistinguishable from one of its neighbours would make
+// their relative order non-deterministic from then on (see the constant's
+// own comment above). The caller is the one who actually knows the rest of
+// the sibling group and rewrites it; this function only ever looks at the
+// two immediate neighbours; a single sibling group can never need a value
+// this function alone could compute).
+//
+// Pure and side-effect-free, so — like compareTrashNewestFirst/
+// selectPurgeCandidates above — it can be exercised directly against
+// synthetic sibling values without a live Firestore connection. Exported for
+// exactly that (verification-only, same precedent as store.js's
+// getInteractionDepth).
+export function computeReorderOrder(prevTask, nextTask) {
+  if (prevTask == null && nextTask == null) return { renumber: false, order: 0 }; // only sibling in the group
+  if (prevTask == null) return { renumber: false, order: nextTask.order - 1000 }; // top
+  if (nextTask == null) return { renumber: false, order: prevTask.order + 1000 }; // bottom
+  if (nextTask.order - prevTask.order < ORDER_RENUMBER_EPSILON) return { renumber: true };
+  return { renumber: false, order: (prevTask.order + nextTask.order) / 2 };
+}
+
+function finishDrag() {
+  const { taskId, parentId, target } = drag;
+  hideDropIndicator();
+  try {
+    drag.handleEl.releasePointerCapture(drag.pointerId);
+  } catch {
+    // Already released, or never supported — nothing left to clean up either way.
+  }
+  drag = null;
+  closeDragInteraction();
+
+  if (!target) return; // no valid hover was ever registered — a no-op, never a "snap back"
+
+  const { beforeId, afterId } = target;
+
+  enqueueMutation(async () => {
+    const userId = getCurrentUserId();
+    const currentTask = getTasks().find((t) => t.id === taskId);
+    if (!userId || !currentTask || currentTask.deleted) return; // abandon cleanly — task is gone or user signed out
+
+    // Re-derive the sibling group fresh at write time, not from the
+    // drag-time snapshot — the same architecture rule every mutation in this
+    // app follows (see enqueueMutation's own comment in store.js). `beforeId`
+    // /`afterId` are looked up by identity, not by their original array
+    // index, so this still lands correctly even if something elsewhere
+    // shifted the group's exact order values in the meantime.
+    const currentSiblings = sortTasks(
+      getTasks().filter(
+        (t) => !t.deleted && t.id !== taskId && t.parentId === parentId && t.inInbox === currentTask.inInbox
+      )
+    );
+    const prevTask = beforeId ? currentSiblings.find((t) => t.id === beforeId) ?? null : null;
+    const nextTask = afterId ? currentSiblings.find((t) => t.id === afterId) ?? null : null;
+
+    try {
+      const plan = computeReorderOrder(prevTask, nextTask);
+      if (plan.renumber) {
+        // Precision guard (step 10's plan): renumber the WHOLE sibling group
+        // with evenly spaced values, including the dragged task at its
+        // intended new slot, all inside this one queued mutation — the one
+        // documented exception to "one document write per reorder".
+        const finalOrder = [...currentSiblings];
+        const insertAt = prevTask ? finalOrder.findIndex((t) => t.id === prevTask.id) + 1 : 0;
+        finalOrder.splice(insertAt, 0, currentTask);
+        for (let i = 0; i < finalOrder.length; i++) {
+          await saveTask(userId, { ...finalOrder[i], order: (i + 1) * 1000 });
+        }
+      } else {
+        await saveTask(userId, { ...currentTask, order: plan.order });
+      }
+    } catch (error) {
+      console.error("Failed to reorder task:", error);
+      alert("Could not save the new order. The list has been refreshed to show what actually saved.");
+    } finally {
+      await refreshTasks();
+    }
+  });
+}
+
+// Escape mid-drag, or an aborted gesture (pointercancel/pointerleave/sign-out)
+// cancels with NO write — product-spec.md's "the interface should make [an
+// overruled drag] visible rather than letting a drag appear to work and then
+// snap back" applies just as much to an abandoned one.
+function cancelDrag() {
+  if (!drag) return;
+  hideDropIndicator();
+  try {
+    drag.handleEl.releasePointerCapture(drag.pointerId);
+  } catch {
+    // Already released, or never supported.
+  }
+  drag = null;
+  closeDragInteraction();
+}
+
 taskSection.addEventListener("pointerdown", (event) => {
   // button 0 is the primary button (left mouse, or any touch/pen contact).
   // A right-click's own pointerdown reports button 2 and is already handled
@@ -783,6 +1246,17 @@ taskSection.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) return;
   const li = event.target.closest("li");
   if (!li) return;
+
+  // Step 10: a pointerdown on the drag handle starts a drag instead of the
+  // long-press timer, full stop — it never even schedules one, which is
+  // exactly what "cancel/suppress the long-press timer" (this step's plan)
+  // needs: a slow drag start can now never also pop the context menu open
+  // mid-drag, because there is no timer running to do it.
+  const handle = event.target.closest(".task-item__drag-handle");
+  if (handle) {
+    beginDrag(li.dataset.taskId, event, handle);
+    return;
+  }
 
   const taskId = li.dataset.taskId;
   longPressStart = { x: event.clientX, y: event.clientY };
@@ -800,6 +1274,10 @@ taskSection.addEventListener("pointerdown", (event) => {
 // click's pointerup never set the flag, so it falls straight through to
 // `cancelLongPress()` with nothing suppressed, exactly as before.
 taskSection.addEventListener("pointerup", () => {
+  if (drag) {
+    finishDrag();
+    return;
+  }
   if (longPressOpenedMenu) {
     longPressOpenedMenu = false;
     armClickSuppression();
@@ -809,16 +1287,24 @@ taskSection.addEventListener("pointerup", () => {
 // A cancelled or abandoned gesture must not leave a stale flag around to
 // wrongly suppress some later, unrelated click — pointerup is not guaranteed
 // to be the event that follows once the pointer has left the section or the
-// gesture was taken over by something else.
+// gesture was taken over by something else. Same reasoning extends to a
+// drag: an interrupted gesture must not leave the interaction guard open or
+// the indicator lingering, exactly what cancelDrag exists for.
 taskSection.addEventListener("pointercancel", () => {
   longPressOpenedMenu = false;
   cancelLongPress();
+  cancelDrag();
 });
 taskSection.addEventListener("pointerleave", () => {
   longPressOpenedMenu = false;
   cancelLongPress();
+  cancelDrag();
 });
 taskSection.addEventListener("pointermove", (event) => {
+  if (drag) {
+    updateDragTarget(event);
+    return;
+  }
   if (!longPressStart) return;
   const dx = event.clientX - longPressStart.x;
   const dy = event.clientY - longPressStart.y;
@@ -844,8 +1330,18 @@ taskMenu.addEventListener("click", async (event) => {
 // Escape closes the menu from anywhere in the document, not just while an
 // edit input has focus (the menu itself holds no focus — its buttons are
 // clicked, not tabbed through, in the primary flows this step verifies).
+// Step 10: Escape during a drag takes priority and cancels it with no write
+// (see cancelDrag) — a drag and the task menu can never both be open at once
+// (the drag handle's pointerdown never arms the long-press timer that would
+// open the menu), but checking drag first keeps that assumption explicit
+// rather than relying on it silently.
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && menuOpen) closeTaskMenu();
+  if (event.key !== "Escape") return;
+  if (drag) {
+    cancelDrag();
+    return;
+  }
+  if (menuOpen) closeTaskMenu();
 });
 
 // A click anywhere outside the menu closes it. Checked against
@@ -896,10 +1392,11 @@ monitorAuthState(async (uid) => {
     stopAutoRefresh();
     invalidate();
     closeTaskMenu(); // a menu open for one account's task means nothing once signed out
+    cancelDrag(); // ditto for a drag in progress — see step 10's cancelDrag
     statusText.textContent = "Please sign in to access your task manager.";
     loginBtn.style.display = "inline-block";
     logoutBtn.style.display = "none";
     taskSection.style.display = "none";
-    views.main();
+    switchView("main"); // reset the panel so the next sign-in doesn't land on Trash
   }
 });

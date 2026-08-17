@@ -214,6 +214,81 @@
     .task-menu__item--danger {
       color: #fca5a5;
     }
+    /* Step 10: the per-row drag handle. `touch-action: none` is load-bearing,
+       not decorative — without it, a touch device's own scroll gesture can
+       win the pointer sequence away from our pointermove handler before a
+       drag ever gets a chance to start (see render.js's createTaskElement
+       comment). */
+    .task-item__drag-handle {
+      cursor: grab;
+      touch-action: none;
+      padding: 0 4px;
+      font-size: 16px;
+      line-height: 1;
+      user-select: none;
+      opacity: 0.7;
+    }
+    .task-item__drag-handle:active {
+      cursor: grabbing;
+    }
+    /* The shared drop-indicator line (app.js creates and moves ONE instance
+       of this, the same "single element, moved not rebuilt" pattern as
+       .task-menu above) — `pointer-events: none` so it can never itself
+       become the element under the pointer mid-drag and confuse the
+       sibling-vs-indicator check in app.js's updateDragTarget. */
+    .drop-indicator {
+      height: 3px;
+      margin: 2px 0;
+      background-color: #3b82f6;
+      border-radius: 2px;
+      list-style: none;
+      pointer-events: none;
+    }
+    /* Step 9: the Trash view. Reuses the app's existing color language
+       (danger red for the destructive framing) rather than inventing a new
+       one. */
+    #trash-view h2 {
+      font-size: 16px;
+      margin-bottom: 4px;
+    }
+    #trash-count {
+      font-size: 13px;
+      color: #6b7280;
+      margin: 4px 0 12px;
+    }
+    li.trash-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px;
+      margin: 5px 0;
+      border-radius: 4px;
+      background-color: #e5e7eb;
+      color: #1f2937;
+    }
+    .trash-item__label {
+      flex: 1;
+      word-break: break-word;
+    }
+    .trash-item__restore-btn {
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 500;
+      background-color: #3b82f6;
+      color: white;
+      flex-shrink: 0;
+    }
+    #trash-btn {
+      background-color: #6b7280;
+      color: white;
+      margin: 8px 0;
+    }
+    #trash-back-btn {
+      background-color: #6b7280;
+      color: white;
+      margin-bottom: 8px;
+    }
   </style>
 </head>
 <body>
@@ -225,33 +300,57 @@
     <button id="logout-btn" style="display: none;">Logout</button>
   </div>
 
-  <!-- Interactive task UI section -->
+  <!-- Interactive task UI section. Step 9 splits this into two mutually
+       exclusive panels — #main-view and #trash-view — switched by app.js's
+       `currentView` string and `views` dispatch object. This is deliberately
+       NOT a router (no hash change, no history entry): the plan calls for
+       "a currentView string plus that dispatch object", nothing more, since
+       the app has exactly two screens and no need for back/forward or a
+       bookmarkable URL per screen. -->
   <div id="task-section" style="display: none; margin-top: 20px;">
-    <form id="task-form">
-      <input
-        type="text"
-        id="task-input"
-        placeholder="Add task (e.g., Buy groceries #food @shop)"
-        required
-      />
-      <button type="submit">Add Task</button>
-    </form>
-    <label class="show-completed-toggle">
-      <input type="checkbox" id="show-completed-toggle" />
-      Show completed
-    </label>
+    <div id="main-view">
+      <form id="task-form">
+        <input
+          type="text"
+          id="task-input"
+          placeholder="Add task (e.g., Buy groceries #food @shop)"
+          required
+        />
+        <button type="submit">Add Task</button>
+      </form>
+      <label class="show-completed-toggle">
+        <input type="checkbox" id="show-completed-toggle" />
+        Show completed
+      </label>
+      <button type="button" id="trash-btn">Trash</button>
 
-    <!-- Step 5: a real container, not a computed view — a task sits here
-         until an explicit move files it into the list below. Shown first
-         since every new capture lands here by default (product-spec.md's
-         Inbox section). -->
-    <section id="inbox-section">
-      <h2>Inbox</h2>
-      <ul id="inbox-list"></ul>
-    </section>
+      <!-- Step 5: a real container, not a computed view — a task sits here
+           until an explicit move files it into the list below. Shown first
+           since every new capture lands here by default (product-spec.md's
+           Inbox section). -->
+      <section id="inbox-section">
+        <h2>Inbox</h2>
+        <ul id="inbox-list"></ul>
+      </section>
 
-    <h2>My Tasks</h2>
-    <ul id="task-list"></ul>
+      <h2>My Tasks</h2>
+      <ul id="task-list"></ul>
+    </div>
+
+    <!-- Step 9: the Trash — a FLAT list ordered newest-deleted-first (never
+         a tree; see render.js's renderTrash comment for why), with a count
+         against the 50-item cap and a per-row Restore button. Nested inside
+         #task-section (not a sibling of it) so it shares that element's
+         existing delegated listeners instead of needing its own set — a
+         trash row's <li> carries `dataset.taskId` just like a main-list row,
+         so app.js's click delegation can recognize `.trash-item__restore-btn`
+         the same way it recognizes the main list's per-row buttons. -->
+    <div id="trash-view" hidden>
+      <button type="button" id="trash-back-btn">← Back</button>
+      <h2>Trash</h2>
+      <p id="trash-count"></p>
+      <ul id="trash-list"></ul>
+    </div>
   </div>
 
   <!-- Step 8: the task context menu (right-click or long-press on a row).

@@ -1091,6 +1091,17 @@ driving the real modules directly):**
   verification, same precedent as `computeReorderOrder`/
   `selectPurgeCandidates` staying in `app.js`); `app.js` now imports them
   from `taskTree.js` instead of defining them.
+- **steps 11–12 review round (issue 5)** — `performReparent`'s write-time
+  refusal handling now distinguishes a true no-op (nothing was overruled,
+  stays silent — the task is already a child of that parent, or the user
+  signed out mid-drag/mid-move) from a refusal of a drop the user actually
+  completed (the depth cap, a cycle, or the drop target having been deleted
+  or purged between the drag starting and this write running) — the latter
+  now always alerts with a short cause-specific message and calls
+  `refreshTasks()`, per product-spec.md's "the interface should make [an
+  overruled action] visible rather than letting it appear to work and then
+  snap back." Previously every refusal except the depth cap returned
+  silently, and even the depth cap's own alert never triggered a refresh.
 
 ## Open items (not steps)
 

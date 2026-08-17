@@ -1419,34 +1419,56 @@ async function performReparent(taskId, newParentId) {
   await enqueueMutation(async () => {
     const userId = getCurrentUserId();
     const currentTask = getTasks().find((t) => t.id === taskId);
-    if (!userId || !currentTask || currentTask.deleted) return; // task gone or signed out
-
-    const newParentTask = newParentId != null ? getTasks().find((t) => t.id === newParentId) : null;
-    if (newParentId != null && (!newParentTask || newParentTask.deleted)) return; // target gone
+    // True no-ops (issue 5): the dragged task itself is gone, or the user
+    // signed out mid-drag. There is no drop left to overrule — the object of
+    // the action vanished, not a still-valid drop that got refused — so this
+    // stays silent, same as every other stale-data race in this app.
+    if (!userId || !currentTask || currentTask.deleted) return;
 
     // Full set, deleted included — same reasoning as the drag-time snapshot
     // (see the `drag` doc comment above beginDrag).
     const freshTree = buildTree(getTasks());
+    const newParentTask = newParentId != null ? freshTree.byId.get(newParentId) : null;
 
-    // D9's "move to root" has no hovered row for canReparent to validate
-    // against (there's nothing at newParentId === null in the tree), so it
-    // skips straight to the no-op check below; every other refusal in D3
-    // (cycle, no-op-onto-current-parent, depth cap) is exactly what
-    // canReparent already re-checks for a real target, against this fresh
-    // tree instead of the drag-time one.
+    // Issue 5: product-spec.md's "make an overruled action visible rather
+    // than letting it appear to work and then snap back" applies to every
+    // refusal below that follows a drop the user actually completed — only a
+    // genuine no-op (nothing was overruled) stays silent. Each explained
+    // refusal gets its own short, specific message and a refresh, rather
+    // than being collapsed into one generic string.
     if (newParentId != null) {
+      if (!newParentTask || newParentTask.deleted) {
+        // The drop target itself vanished (deleted, or purged from the
+        // trash) between the drag starting and this write actually running —
+        // a real refusal of a completed drop, not a no-op.
+        alert("That task no longer exists. The list has been refreshed.");
+        await refreshTasks();
+        return;
+      }
+      if (currentTask.parentId === newParentId) return; // true no-op — already the parent, nothing to explain
+
+      // D9's "move to root" (newParentId === null) has no hovered row for
+      // canReparent to validate against, so it skips straight to the no-op
+      // check below instead; every other refusal in D3 (self/cycle, depth
+      // cap) is exactly what canReparent re-checks here, against this fresh
+      // tree instead of the drag-time one.
       const subtreeHeight = computeSubtreeHeight(freshTree, taskId);
       if (!canReparent(freshTree, taskId, newParentId, subtreeHeight)) {
-        // Distinguish "still too deep" (worth telling the user) from every
-        // other refusal (silently abandon — the target simply isn't there
-        // anymore, same as every other stale-data race in this app).
         if (depthOf(freshTree, newParentId) + 1 + subtreeHeight > 6) {
           alert("That would put a task too deep — subtasks can't go further than 7 levels.");
+        } else {
+          // The remaining canReparent refusals once no-op/missing-target/
+          // depth-cap are already handled above: dropping onto self or onto
+          // one of its own descendants — both would cut the tree into a
+          // cycle. Reachable only via a concurrent structural change between
+          // the drag's own hover validation and this write-time re-check.
+          alert("That move isn't allowed — it would create a cycle in the task hierarchy.");
         }
+        await refreshTasks();
         return;
       }
     } else if (currentTask.parentId === null) {
-      return; // D9: already at the root — nothing to promote
+      return; // D9: already at the root — true no-op, nothing was overruled
     }
 
     const descendantsFull = descendantIds(freshTree, taskId);

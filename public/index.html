@@ -59,7 +59,7 @@
       outline: 2px solid #3b82f6;
       border-color: transparent;
     }
-    #todo-form button {
+    #task-form button {
       background-color: #3b82f6;
       color: white;
     }
@@ -67,6 +67,91 @@
       list-style: none;
       padding: 0;
       margin-top: 20px;
+    }
+    .show-completed-toggle {
+      display: block;
+      margin: 16px 0 4px;
+      font-size: 14px;
+      color: #374151;
+    }
+    /* Per-task color still comes from the stored `colors` field (set inline
+       by render.js); everything else about a row's look lives here.
+       flex-wrap lets the note row (flex-basis: 100%, below) drop onto its
+       own line under the checkbox+title row instead of squeezing into it. */
+    li.task-item {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 10px;
+      margin: 5px 0;
+      /* Depth comes from taskTree.js's depthOf, set as a custom property by
+         render.js (li.style.setProperty("--depth", depth)) — this is the
+         only place the number becomes a visual indent. */
+      margin-left: calc(var(--depth, 0) * 24px);
+      border-radius: 4px;
+      font-family: sans-serif;
+    }
+    .task-item--completed .task-item__label {
+      text-decoration: line-through;
+      opacity: 0.7;
+    }
+    .task-item__label {
+      cursor: text;
+    }
+    .task-item__title-input {
+      flex: 1;
+      min-width: 120px;
+      font-size: 14px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      color: inherit;
+      background-color: rgba(255, 255, 255, 0.15);
+    }
+    /* Note row always spans the full width, indented to sit under the title
+       rather than the checkbox. */
+    .task-item__note-display,
+    .task-item__note-input {
+      flex-basis: 100%;
+      margin-left: 28px;
+      font-size: 13px;
+    }
+    .task-item__note-display {
+      cursor: text;
+      white-space: pre-wrap;
+      opacity: 0.9;
+    }
+    .task-item__note-display a {
+      color: inherit;
+      text-decoration: underline;
+    }
+    .task-item__note-placeholder {
+      font-style: italic;
+      opacity: 0.6;
+    }
+    .task-item__note-input {
+      width: calc(100% - 28px);
+      min-height: 40px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      font-family: inherit;
+      color: inherit;
+      background-color: rgba(255, 255, 255, 0.15);
+      resize: vertical;
+    }
+    /* Stand-ins for the task menu (long-press/right-click) that step 8 adds. */
+    .task-item__add-subtask-btn,
+    .task-item__delete-btn {
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 500;
+      background-color: rgba(0, 0, 0, 0.25);
+      color: inherit;
+    }
+    .task-item__add-subtask-btn {
+      margin-left: auto;
     }
   </style>
 </head>
@@ -79,19 +164,23 @@
     <button id="logout-btn" style="display: none;">Logout</button>
   </div>
 
-  <!-- Interactive Todo UI section -->
-  <div id="todo-section" style="display: none; margin-top: 20px;">
+  <!-- Interactive task UI section -->
+  <div id="task-section" style="display: none; margin-top: 20px;">
     <h2>My Tasks</h2>
-    <form id="todo-form">
-      <input 
-        type="text" 
-        id="todo-input" 
-        placeholder="Add task (e.g., Buy groceries #food @shop)" 
-        required 
+    <form id="task-form">
+      <input
+        type="text"
+        id="task-input"
+        placeholder="Add task (e.g., Buy groceries #food @shop)"
+        required
       />
-      <button type="submit">Add Todo</button>
+      <button type="submit">Add Task</button>
     </form>
-    <ul id="todo-list"></ul>
+    <label class="show-completed-toggle">
+      <input type="checkbox" id="show-completed-toggle" />
+      Show completed
+    </label>
+    <ul id="task-list"></ul>
   </div>
 
   <!-- Pointing to our main orchestration file -->

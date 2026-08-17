@@ -122,25 +122,37 @@ creation; moving regions means a new database and a data migration.
 
 ### Data model
 
-Written by [public/todoService.js](public/todoService.js). Tasks live in a
+Written by [public/taskService.js](public/taskService.js). Tasks live in a
 per-user subcollection, which is what makes owner-scoped rules simple:
 
 ```
-users/{userId}/todos/{todoId}
+users/{userId}/tasks/{taskId}
 ```
 
-Each todo document:
+Field names and required/optional shape match `isValidTask()` in
+[firestore.rules](firestore.rules) — that function is the contract; a write
+that doesn't satisfy it is rejected before it reaches the database.
+
+Each task document:
 
 | Field | Type | Notes |
 |---|---|---|
-| `title` | string | Raw input text, tags included |
-| `completed` | bool | Always written `false`; no toggle in the UI yet |
-| `parentTaskId` | string \| null | Reserved for task hierarchy; nothing sets it yet |
-| `tags` | string[] | Parsed from the title by `/([#@]\w+)/g` — `#food`, `@shop` |
+| `title` | string | Required, 1-1000 chars. Raw input text, tags included. Editing it inline is the only way `tags` ever changes — they are re-parsed out of the new title on every commit |
+| `completed` | bool | Required. Toggled from the UI checkbox; completed tasks are hidden unless "show completed" is on |
+| `deleted` | bool | Required. Set by `softDeleteTask`; always written `false` on create. No trash UI reads it yet |
+| `deletedAt` | timestamp \| null | Set alongside `deleted: true` by `softDeleteTask`. Written but not yet read — the Trash screen (step 9) is what will read it. Reads normalize a missing value to `null` |
+| `pinned` | bool | Required. Always written `false`; no pin UI yet |
+| `inInbox` | bool | Required. `true` for tasks added from the main form, `false` for subtasks — a task filed under an explicit parent is not a bare capture. No Inbox UI reads it yet |
+| `note` | string \| null | Optional, <= 10000 chars. Edited inline; rendered with line breaks preserved and bare http(s) URLs auto-linked. Reads normalize a missing value to `""` |
+| `parentId` | string \| null | Optional. The single source of truth for the hierarchy — `taskTree.js` derives all parent/child links from it alone. Set when a task is created via "+ Subtask" |
+| `ancestors` | list | Optional, <= 6 entries, **root-first**. A cached denormalization of the chain above the task, written on create as `[...parent.ancestors, parent.id]`. This is where the 7-level cap is enforceable. Reads normalize a missing value to `[]` |
+| `order` | number | Fractional index used to sort the list ascending. New tasks get `min(sibling orders) - 1000`. Reads normalize a missing value (pre-existing docs) to the doc's `createdAt` in epoch millis |
+| `updatedAt` | timestamp | Re-stamped with `serverTimestamp()` on every write. Reads normalize a missing value to `createdAt` |
+| `tags` | string[] | Optional, <= 50 entries. Parsed from the title by `/([#@]\w+)/g` — `#food`, `@shop` |
 | `colors.foreground` | string | Hex; app.js currently sends `#ffffff` |
 | `colors.background` | string | Hex; app.js currently sends `#10b981` |
 | `createdAt` | timestamp | `serverTimestamp()` |
-| `dueDate` | timestamp \| null | Accepted by `addTodo`, not yet supplied by the UI |
+| `dueDate` | timestamp \| null | Accepted by `addTask`, not yet supplied by the UI |
 
 Reads use `query(..., orderBy("createdAt", "desc"))` — a single-field sort, served
 by the automatic index. That is why [firestore.indexes.json](firestore.indexes.json)

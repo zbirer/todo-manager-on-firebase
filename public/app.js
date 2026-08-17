@@ -138,8 +138,29 @@ function fieldSuffixForContext(context) {
   return context === "main" ? "" : `:${context}`;
 }
 
+// Step 13 review round (issues 1+2): idempotent per key — re-opening an
+// edit that's already open is a no-op, before either side effect. Title and
+// note only ever have one entry point onto their edit state each (clicking
+// the display), and that display element is hidden mid-edit, so it can't be
+// clicked again — they were accidentally immune to double-counting a
+// re-open. Due date is the first field with a SECOND independent entry
+// point onto the same edit state (the context menu's "Change due date",
+// handleEditDueDateMenuClick below), and its due-display is NOT hidden
+// mid-edit, so right-clicking a row while its due-date editor is already
+// open and choosing "Change due date" used to call this a second time:
+// `openEdits.add` was already a no-op for a repeated key, but
+// `beginInteraction()` fired unconditionally, incrementing depth with no
+// matching decrement (closeEdit's own guard only ever fires once per key,
+// so the extra increment is never paid back) — a permanent, invisible leak
+// of the interaction guard that silently disables the 5-minute auto-refresh
+// for the rest of the session. Guarding here, rather than at every call
+// site (e.g. only in handleEditDueDateMenuClick), makes ALL fields immune to
+// a future second entry point, instead of relying on every new
+// menu-triggered "open the same editor" action to remember to guard itself.
 function beginEdit(taskId, field) {
-  openEdits.add(`${taskId}:${field}`);
+  const key = `${taskId}:${field}`;
+  if (openEdits.has(key)) return; // already open — no-op, no double-count
+  openEdits.add(key);
   beginInteraction();
 }
 

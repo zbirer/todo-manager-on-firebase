@@ -100,6 +100,24 @@ export function sortTasks(tasks) {
 // what's currently filtered; feeding them an already-filtered list would
 // make the filter a second input to depth, silently disagreeing with reality
 // the moment step 11 moves a subtree.
+// Step 13 review round (issue 3): the one place all three edit flags
+// (editingTitle/editingNote/editingDueDate) are enumerated for the
+// "entry left the rendered set while mid-edit" cleanup. Before this, each of
+// renderTasks's two passes (main, focus) and renderOverdue's own pass
+// hand-maintained its own three-flag list — renderOverdue's had all three,
+// but main and focus were only ever updated for title/note when dueDate was
+// added (step 13), leaving a due-date edit's interaction guard stuck open
+// forever if its row vanished mid-edit. Routing all three passes through one
+// function means a future fourth field only has to be added HERE to be safe
+// everywhere, instead of being added to three call sites and forgotten in
+// one — exactly the gap this fixes.
+function closeAnyOpenEdits(entry, id, onEditCancelled, fieldSuffix = "") {
+  if (!onEditCancelled) return;
+  if (entry.editingTitle) onEditCancelled(id, "title" + fieldSuffix);
+  if (entry.editingNote) onEditCancelled(id, "note" + fieldSuffix);
+  if (entry.editingDueDate) onEditCancelled(id, "dueDate" + fieldSuffix);
+}
+
 function flattenTree(allTasks, visibleIds) {
   const tree = buildTree(allTasks);
   const result = [];
@@ -127,10 +145,19 @@ function flattenTree(allTasks, visibleIds) {
 // returns) or a plain JS Date (what a freshly-constructed-but-not-yet-
 // refetched value would be, though this app never optimistically renders
 // one — see the "one refresh strategy" rule) into a plain Date, or null.
+// Step 13 review round (issue 4): `isValidTask()` (firestore.rules) never
+// constrains `dueDate`'s shape, so a raw string, a malformed value, or a
+// Timestamp-shaped object with no real `.toDate()` can legitimately arrive
+// from the database (a manual Firestore edit, an import, a future
+// migration) — and would otherwise resolve to `null` exactly like a task
+// that genuinely has no due date, silently hiding the bad data. A present
+// but unparseable value is logged so it's discoverable; a genuinely
+// absent/null `dueDate` is the normal case and must stay silent.
 function timestampToDate(value) {
   if (!value) return null;
   if (typeof value.toDate === "function") return value.toDate();
   if (value instanceof Date) return value;
+  console.error("Unparseable dueDate value:", value);
   return null;
 }
 
@@ -337,10 +364,7 @@ export function renderTasks(containers, focusContainer, onEditCancelled) {
   for (const id of entriesByTaskId.keys()) {
     if (!seenIds.has(id)) {
       const entry = entriesByTaskId.get(id);
-      if (onEditCancelled) {
-        if (entry.editingTitle) onEditCancelled(id, "title");
-        if (entry.editingNote) onEditCancelled(id, "note");
-      }
+      closeAnyOpenEdits(entry, id, onEditCancelled);
       entriesByTaskId.delete(id);
     }
   }
@@ -351,10 +375,7 @@ export function renderTasks(containers, focusContainer, onEditCancelled) {
   for (const id of focusEntriesByTaskId.keys()) {
     if (!focusSeenIds.has(id)) {
       const entry = focusEntriesByTaskId.get(id);
-      if (onEditCancelled) {
-        if (entry.editingTitle) onEditCancelled(id, "title:focus");
-        if (entry.editingNote) onEditCancelled(id, "note:focus");
-      }
+      closeAnyOpenEdits(entry, id, onEditCancelled, ":focus");
       focusEntriesByTaskId.delete(id);
     }
   }
@@ -988,11 +1009,7 @@ export function renderOverdue(container, tasks, onEditCancelled) {
   for (const id of overdueEntriesByTaskId.keys()) {
     if (!seenIds.has(id)) {
       const entry = overdueEntriesByTaskId.get(id);
-      if (onEditCancelled) {
-        if (entry.editingTitle) onEditCancelled(id, "title:overdue");
-        if (entry.editingNote) onEditCancelled(id, "note:overdue");
-        if (entry.editingDueDate) onEditCancelled(id, "dueDate:overdue");
-      }
+      closeAnyOpenEdits(entry, id, onEditCancelled, ":overdue");
       overdueEntriesByTaskId.delete(id);
     }
   }

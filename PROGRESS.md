@@ -1474,6 +1474,56 @@ driving the real modules directly):**
   belongs to (click-to-edit, focusout commit, and — new for this step —
   which row a context-menu-opened editor should target, threaded through
   via `taskMenu.dataset.context`).
+- **step 13 review round (issues 1+2)** — `beginEdit` (app.js) is now
+  idempotent per `${taskId}:${field}` key: re-opening an edit that's already
+  open in `openEdits` is a no-op, returning before EITHER `openEdits.add` or
+  `beginInteraction()` run. Due date is the first field with two independent
+  entry points onto the same edit state — clicking the due-date display, and
+  the context menu's "Change due date" (`handleEditDueDateMenuClick`) — and
+  its due-display, unlike title/note's, is NOT hidden mid-edit, so
+  right-clicking a row with its due-date editor already open and choosing
+  "Change due date" called `beginEdit` a second time: `openEdits.add` was
+  already a no-op for the repeated key, but `beginInteraction()` fired
+  unconditionally, incrementing `interactionDepth` a second time with no
+  matching decrement (`closeEdit`'s own delete-based guard only ever pays
+  back one of the two increments). This permanently leaked the interaction
+  guard — the 5-minute auto-refresh silently stopped firing for the rest of
+  the session, no error, no visible symptom until data went stale. The fix
+  is in `beginEdit` itself, not at the `handleEditDueDateMenuClick` call
+  site (the reviewed alternative) — title and note get the same guard for
+  free, so any future second entry point onto an edit is safe by
+  construction instead of depending on being remembered. **`beginEdit` being
+  idempotent per key is now a load-bearing property** — later steps adding
+  further entry points onto an existing edit (menu items, keyboard
+  shortcuts, etc.) can call it freely without re-deriving this guard.
+  `closeEdit` already had the symmetric guard (`openEdits.delete` only
+  decrements when it actually removed a key), so a double-close was never a
+  problem — nothing needed fixing there.
+- **step 13 review round (issue 3)** — `renderTasks`'s two cleanup passes
+  (main-list/tree containers, and Focus) checked only `entry.editingTitle`/
+  `entry.editingNote` for a task leaving the rendered set mid-edit, never
+  `entry.editingDueDate` — added in step 13 but only ever wired into
+  `renderOverdue`'s own equivalent pass, not into these two, so a due-date
+  editor left open on a main-list or Focus row whose task then left the
+  rendered set (completed, deleted, filtered by "show completed") leaked the
+  interaction guard exactly like issues 1+2, just via a different path.
+  Fixed by hoisting all three passes' logic into one shared
+  `closeAnyOpenEdits(entry, id, onEditCancelled, fieldSuffix)` (render.js),
+  called from all three cleanup passes (main, Focus, Overdue) instead of
+  each hand-maintaining its own list of which flags to check — a future
+  fourth edit flag now only has to be added in this one function to be safe
+  everywhere, instead of being added to three call sites and forgotten in
+  one, which is exactly how this gap happened.
+- **step 13 review round (issue 4)** — `timestampToDate` (render.js) now
+  `console.error`s when `dueDate` is present but unparseable (a raw string,
+  a malformed value, or a Timestamp-shaped object with no real `.toDate()`),
+  before still returning `null`. `isValidTask()` (firestore.rules) never
+  constrains `dueDate`'s shape, so such a value can legitimately arrive from
+  the database (a manual Firestore edit, an import, a future migration) and
+  was previously indistinguishable from "no due date at all" — silently
+  hiding bad data instead of surfacing it. A genuinely `null`/absent
+  `dueDate` remains completely silent — only the present-but-unparseable
+  case logs.
 
 ## Open items (not steps)
 

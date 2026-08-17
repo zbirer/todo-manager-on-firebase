@@ -30,6 +30,12 @@
 // re-binding on refresh. app.js owns *when* an edit starts/stops (it decides
 // based on clicks and commits); render.js only owns *how* the DOM looks in
 // each state, exposed through the begin/end/get/set functions below.
+//
+// Step 5 (Inbox container): `renderTasks` renders into *multiple* containers
+// (the Inbox section and the main list) from ONE shared `entriesByTaskId`
+// Map, so a task id always maps to exactly one <li> in exactly one
+// container's DOM, and moving a task between containers (filing it out of
+// the Inbox) reuses that same <li> rather than destroying and recreating it.
 
 import { buildTree, depthOf } from "./taskTree.js";
 
@@ -80,33 +86,52 @@ function flattenTree(allTasks, visibleIds) {
   return result;
 }
 
-// `onEditCancelled` is called once for every open edit (title and/or note)
-// that gets silently dropped below, in case anything is left with a
-// dangling `beginInteraction()`. render.js must not import store.js — the
-// interaction guard is app.js's concern — so this is a callback rather than
-// a direct call, per the module ownership boundary.
-export function renderTasks(container, allTasks, visibleIds, onEditCancelled) {
-  const flattened = flattenTree(allTasks, visibleIds);
+// `containers` is an array of `{ element, tasks, visibleIds }` — one entry
+// per rendered section (step 5 adds the Inbox alongside the main list; a
+// future Focus/Trash section would be a third). `onEditCancelled` is called
+// once for every open edit (title and/or note) that gets silently dropped
+// below, in case anything is left with a dangling `beginInteraction()`.
+// render.js must not import store.js — the interaction guard is app.js's
+// concern — so this is a callback rather than a direct call, per the module
+// ownership boundary.
+//
+// All containers share ONE `entriesByTaskId` Map and go through ONE
+// seen/cleanup pass before any DOM is touched. That matters: a task id must
+// map to exactly one <li>, and Inbox vs. main are a strict partition (a
+// subtask always inherits its parent's `inInbox`, so no task's ancestry ever
+// crosses between the two) — but if this ran as two independent calls to a
+// single-container version of this function, the FIRST call's cleanup would
+// delete every entry the SECOND call still needs (they're simply not in the
+// first call's own seen set), destroying and rebuilding half the list on
+// every render. Computing the union of "seen" across every container first,
+// then reconciling each container's DOM separately, is what avoids that.
+export function renderTasks(containers, onEditCancelled) {
   const seenIds = new Set();
+  const perContainer = containers.map(({ element, tasks, visibleIds }) => {
+    const flattened = flattenTree(tasks, visibleIds);
+    for (const { task } of flattened) seenIds.add(task.id);
+    return { element, flattened };
+  });
 
-  for (const { task, depth } of flattened) {
-    seenIds.add(task.id);
-    let entry = entriesByTaskId.get(task.id);
-    if (!entry) {
-      entry = createTaskElement(task.id);
-      entriesByTaskId.set(task.id, entry);
+  for (const { flattened } of perContainer) {
+    for (const { task, depth } of flattened) {
+      let entry = entriesByTaskId.get(task.id);
+      if (!entry) {
+        entry = createTaskElement(task.id);
+        entriesByTaskId.set(task.id, entry);
+      }
+      updateTaskElement(entry, task, depth);
     }
-    updateTaskElement(entry, task, depth);
   }
 
-  // Drop entries for tasks that left the rendered set (deleted, filtered
-  // out by "show completed", a sign-out clearing the store, etc.) so the Map
-  // doesn't grow forever. A dropped entry can be mid-edit — its own
-  // `focusout` never fires because the element is about to be discarded
-  // rather than blurred — so the interaction it opened would otherwise never
-  // close and the 5-minute refresh would stay blocked forever. `entry` is
-  // about to be garbage anyway, so there's nothing to reset here beyond
-  // telling the caller an interaction needs closing.
+  // Drop entries for tasks that left every rendered container this pass
+  // (deleted, filtered out by "show completed", a sign-out clearing the
+  // store, etc.) so the Map doesn't grow forever. A dropped entry can be
+  // mid-edit — its own `focusout` never fires because the element is about
+  // to be discarded rather than blurred — so the interaction it opened would
+  // otherwise never close and the 5-minute refresh would stay blocked
+  // forever. `entry` is about to be garbage anyway, so there's nothing to
+  // reset here beyond telling the caller an interaction needs closing.
   for (const id of entriesByTaskId.keys()) {
     if (!seenIds.has(id)) {
       const entry = entriesByTaskId.get(id);
@@ -118,7 +143,14 @@ export function renderTasks(container, allTasks, visibleIds, onEditCancelled) {
     }
   }
 
-  reconcileChildren(container, flattened.map(({ task }) => entriesByTaskId.get(task.id).li));
+  // A task moving between containers (filed out of the Inbox) simply shows
+  // up in a different container's `flattened` list on the next render;
+  // reconcileChildren's insertBefore relocates its <li> there directly
+  // (insertBefore natively reparents across different parents, not just
+  // within one), so a task id is never a child of two containers at once.
+  for (const { element, flattened } of perContainer) {
+    reconcileChildren(element, flattened.map(({ task }) => entriesByTaskId.get(task.id).li));
+  }
 }
 
 // Reconciles `container`'s children to match `desiredList` in place, without
@@ -197,6 +229,23 @@ function createTaskElement(taskId) {
   noteInput.style.display = "none";
   li.appendChild(noteInput);
 
+  // Every per-row action button lives in one wrapper (see index.html's
+  // .task-item__actions) so the group is pushed right as a whole regardless
+  // of which individual buttons are visible for this task.
+  const actions = document.createElement("div");
+  actions.className = "task-item__actions";
+  li.appendChild(actions);
+
+  // Step 5: the one explicit way a task leaves the Inbox. Only shown for
+  // rows currently in the Inbox (updateTaskElement toggles it) — a task
+  // that isn't there has nothing to file.
+  const moveOutButton = document.createElement("button");
+  moveOutButton.type = "button";
+  moveOutButton.className = "task-item__move-out-btn";
+  moveOutButton.textContent = "Move out of Inbox";
+  moveOutButton.setAttribute("aria-label", "Move out of Inbox");
+  actions.appendChild(moveOutButton);
+
   // Step 4: add a subtask under this task. Same stand-in-for-the-menu
   // reasoning as the delete button (step 3) — step 8 replaces both with a
   // real long-press/right-click menu.
@@ -205,7 +254,7 @@ function createTaskElement(taskId) {
   addSubtaskButton.className = "task-item__add-subtask-btn";
   addSubtaskButton.textContent = "+ Subtask";
   addSubtaskButton.setAttribute("aria-label", "Add subtask");
-  li.appendChild(addSubtaskButton);
+  actions.appendChild(addSubtaskButton);
 
   // Step 3: delete a (leaf) task. A dedicated per-row menu is step 8 — this
   // is a plain button standing in for it until then.
@@ -214,7 +263,7 @@ function createTaskElement(taskId) {
   deleteButton.className = "task-item__delete-btn";
   deleteButton.textContent = "Delete";
   deleteButton.setAttribute("aria-label", "Delete task");
-  li.appendChild(deleteButton);
+  actions.appendChild(deleteButton);
 
   return {
     li,
@@ -223,6 +272,7 @@ function createTaskElement(taskId) {
     titleInput,
     noteDisplay,
     noteInput,
+    moveOutButton,
     addSubtaskButton,
     deleteButton,
     editingTitle: false,
@@ -231,7 +281,7 @@ function createTaskElement(taskId) {
 }
 
 function updateTaskElement(entry, task, depth) {
-  const { li, checkbox, label, titleInput, noteDisplay, noteInput } = entry;
+  const { li, checkbox, label, titleInput, noteDisplay, noteInput, moveOutButton } = entry;
 
   li.className = "task-item" + (task.completed ? " task-item--completed" : "");
   // Per-task color still comes from stored data (step 14 replaces this with
@@ -244,6 +294,9 @@ function updateTaskElement(entry, task, depth) {
   li.style.setProperty("--depth", depth ?? 0);
 
   checkbox.checked = !!task.completed;
+
+  // Only an Inbox row has anything to file out of the Inbox.
+  moveOutButton.style.display = task.inInbox ? "" : "none";
 
   // Title display/input only get synced from `task` while this row isn't
   // mid-edit. An open title edit holds text the user hasn't saved yet, and a

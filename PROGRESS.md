@@ -1,8 +1,8 @@
 # Progress
 
-Last updated: 2026-08-17 — **Steps 1–4 approved and committed.** Step 5 (Inbox
-container) is next. The signed-in browser walkthrough had not been reported back at
-commit time — the click-path below is still the first thing to run.
+Last updated: 2026-08-17 — **Steps 1–6 implemented and committed.** Step 7
+(un-complete memory) is next. No signed-in browser walkthrough has been reported back
+for any step yet — the click-path below is still the first thing to run.
 
 ## Step table
 
@@ -12,9 +12,9 @@ commit time — the click-path below is still the first thing to run.
 | 2 | Inline edit | done |
 | 3 | Soft delete (leaf) | done |
 | 4 | Hierarchy | done |
-| 5 | Inbox container | next |
-| 6 | Cascade complete | planned |
-| 7 | Un-complete memory | planned |
+| 5 | Inbox container | done |
+| 6 | Cascade complete | done |
+| 7 | Un-complete memory | next |
 | 8 | Context menu + cascade delete | planned |
 | 9 | Trash | planned |
 | 10 | Manual reorder | planned |
@@ -30,16 +30,22 @@ commit time — the click-path below is still the first thing to run.
 | 20 | Search — advanced | planned |
 | 21 | Export / import | planned |
 
-## Resume here — step 5 (Inbox container)
+## Resume here — step 7 (un-complete memory)
 
-**Exact next action:** read the plan's step-5 row and `product-spec.md`'s Inbox
-section, then implement step 5. The first thing step 5 must settle is whether
-`inInbox: false` on subtasks (decided in step 4, below) matches what the spec says the
-Inbox is — that is the one decision made ahead of the step that owns it.
+**Exact next action:** implement step 7. Un-completing a parent must reopen *only*
+what that parent's cascade closed — i.e. every task whose `closedByCascadeFrom`
+equals that parent's id — and must leave a task that was completed independently
+still completed. Step 6 already stamps exactly what step 7 needs; the reopen set is
+a single `=== parentId` filter over the subtree, at any nesting depth.
 
-Steps 1–4 were approved and committed on 2026-08-17, but the signed-in walkthrough was
-not reported back before the commit. Run the click-path below first; it doubles as the
-regression check whenever a later step touches editing, deletion, or hierarchy.
+Note that step 6's un-complete path currently only resets the clicked task's own
+`closedByCascadeFrom` to `null` and deliberately does no reopening — that is the
+hook step 7 replaces.
+
+**No step has been confirmed in a signed-in browser yet.** Everything below marked
+"verified" was verified unsigned-in, by driving the real modules with synthetic
+tasks. Run the click-path first; it doubles as the regression check whenever a later
+step touches editing, deletion, hierarchy, the Inbox, or completion.
 
 ```bash
 nvm use 24.14.1 && firebase serve --only hosting --port 5050
@@ -197,6 +203,46 @@ driving the real modules directly):**
   client aimed at `todos`. That denial is the `permission-denied` error diagnosed
   earlier in this project. The `todos` collection is empty and always was. Adding
   migration code would be dead code implying a schema that never reached the database.
+
+- **step 5 — REVERSES step 4.** A subtask now **inherits its parent's `inInbox`**
+  rather than always being created `false`. Step 4's rule put a child in the main list
+  while its parent sat in the Inbox — two different containers, so the task was
+  findable but structurally incoherent. This was the decision step 4 flagged as step
+  5's to confirm, and it did not survive contact with the Inbox UI.
+- **step 5** — "explicit move" is a per-row "Move out of Inbox" button (no drag or
+  context menu exists until steps 8 and 11), and it files the clicked task **and its
+  whole subtree** together, since inheritance means a subtree shares Inbox membership.
+- **step 5** — Inbox and main list are two containers rendered from **one shared**
+  `entriesByTaskId` Map in a single `renderTasks` call, with one union cleanup pass.
+  One task id still maps to exactly one `<li>`, which moves between containers via
+  `insertBefore` rather than being rebuilt. Rendering the same id into two containers
+  would break the invariant the whole keyed re-render rests on.
+- **step 5** — the delegated listeners moved from `#task-list` up to `#task-section`,
+  the common ancestor of both lists, so one set of listeners still covers everything.
+  Any later step that adds a third container must put it inside that ancestor or wire
+  its own delegation.
+- **step 6** — `closedByCascadeFrom` holds **the id of the task the user actually
+  clicked**, not each task's immediate parent, stamped on every descendant the cascade
+  closes. Step 7 therefore reverses exactly one cascade with a single `=== clickedId`
+  filter, at any nesting depth. Do not change this to the immediate parent.
+- **step 6** — a descendant that was **already completed before the cascade** is never
+  written and never stamped, so step 7 leaves it completed. Verified against the real
+  `taskTree.js`: with A > B > C where B was already done, the cascade from A skips B
+  entirely but still reaches and stamps C — it does not short-circuit at the first
+  completed node.
+- **step 6** — completing a task directly always writes its own
+  `closedByCascadeFrom: null`, because the user's explicit act is never a cascade
+  effect, whatever stale value the field held.
+- **step 6** — the whole cascade is **one** queued mutation that re-derives the subtree
+  from `getTasks()` at run time, with a single `refreshTasks()` in a `finally`. Writes
+  are sequential per-task `setDoc`s with no batch or transaction, so a mid-cascade
+  failure leaves the earlier writes committed; the `finally` refresh makes the UI show
+  the true partial state rather than looking as though nothing happened.
+- **step 6 — known gap, not fixed:** the 5-minute timer's `refreshTasks()` is not
+  itself routed through `enqueueMutation`, so a very slow deep cascade leaves a narrow
+  window where the timer's refetch can interleave with the cascade's writes. Low
+  probability, no data corruption (the refetch only reads), but it is the obvious thing
+  to fix if refresh-vs-mutation ordering ever misbehaves.
 
 ## Open items (not steps)
 

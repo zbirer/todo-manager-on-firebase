@@ -141,17 +141,34 @@
       background-color: rgba(255, 255, 255, 0.15);
       resize: vertical;
     }
+    /* All per-row action buttons live in one wrapper so pushing the whole
+       group to the right (margin-left: auto) never depends on which
+       individual buttons happen to be visible — render.js toggles buttons
+       inside this wrapper independently (e.g. move-out-of-inbox only shows
+       for Inbox rows) without CSS having to know which one is "first". */
+    .task-item__actions {
+      display: flex;
+      gap: 6px;
+      margin-left: auto;
+    }
     /* Stand-ins for the task menu (long-press/right-click) that step 8 adds. */
     .task-item__add-subtask-btn,
-    .task-item__delete-btn {
+    .task-item__delete-btn,
+    .task-item__move-out-btn {
       padding: 4px 10px;
       font-size: 12px;
       font-weight: 500;
       background-color: rgba(0, 0, 0, 0.25);
       color: inherit;
     }
-    .task-item__add-subtask-btn {
-      margin-left: auto;
+    #inbox-section h2 {
+      font-size: 16px;
+      margin-bottom: 4px;
+    }
+    #inbox-section {
+      padding-bottom: 8px;
+      border-bottom: 1px solid #d1d5db;
+      margin-bottom: 8px;
     }
   </style>
 </head>
@@ -166,7 +183,6 @@
 
   <!-- Interactive task UI section -->
   <div id="task-section" style="display: none; margin-top: 20px;">
-    <h2>My Tasks</h2>
     <form id="task-form">
       <input
         type="text"
@@ -180,6 +196,17 @@
       <input type="checkbox" id="show-completed-toggle" />
       Show completed
     </label>
+
+    <!-- Step 5: a real container, not a computed view — a task sits here
+         until an explicit move files it into the list below. Shown first
+         since every new capture lands here by default (product-spec.md's
+         Inbox section). -->
+    <section id="inbox-section">
+      <h2>Inbox</h2>
+      <ul id="inbox-list"></ul>
+    </section>
+
+    <h2>My Tasks</h2>
     <ul id="task-list"></ul>
   </div>
 

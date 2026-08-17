@@ -6,7 +6,7 @@
 
 import { logInWithGoogle, logOut, monitorAuthState } from "./auth.js";
 import { addTask, fetchTasks, saveTask, softDeleteTask } from "./taskService.js";
-import { buildTree, depthOf } from "./taskTree.js";
+import { buildTree, depthOf, descendantIds } from "./taskTree.js";
 import {
   getTasks,
   setTasks,
@@ -76,6 +76,7 @@ const taskSection = document.getElementById("task-section");
 const taskForm = document.getElementById("task-form");
 const taskInput = document.getElementById("task-input");
 const taskList = document.getElementById("task-list");
+const inboxList = document.getElementById("inbox-list");
 const showCompletedToggle = document.getElementById("show-completed-toggle");
 
 // 2. View dispatch table. Only `main` exists in step 1 — this is the
@@ -89,14 +90,27 @@ function renderMainView() {
   // Structure and depth always come from every non-deleted task, never from
   // the "show completed" filter — otherwise the filter becomes a second
   // input to depth, which taskTree.js is supposed to be the only source of.
-  // `visibleIds` is what actually narrows the render; a task can still be
-  // hidden here while its non-completed children render (indented at their
-  // true depth) via render.js's flattenTree.
+  // `visibleIds` is what actually narrows each container's render; a task
+  // can still be hidden while its non-completed children render (indented
+  // at their true depth) via render.js's flattenTree.
   const nonDeletedTasks = getTasks().filter((task) => !task.deleted);
-  const visibleIds = new Set(
-    nonDeletedTasks.filter((task) => showCompleted || !task.completed).map((task) => task.id)
+
+  // Inbox vs. main is a strict partition: a subtask always inherits its
+  // parent's `inInbox` at creation time (handleAddSubtaskClick below), so no
+  // task's ancestry ever crosses between the two — each side is a complete,
+  // self-contained forest on its own.
+  const inboxTasks = nonDeletedTasks.filter((task) => task.inInbox);
+  const mainTasks = nonDeletedTasks.filter((task) => !task.inInbox);
+  const visibleIdsFor = (tasks) =>
+    new Set(tasks.filter((task) => showCompleted || !task.completed).map((task) => task.id));
+
+  renderTasks(
+    [
+      { element: inboxList, tasks: inboxTasks, visibleIds: visibleIdsFor(inboxTasks) },
+      { element: taskList, tasks: mainTasks, visibleIds: visibleIdsFor(mainTasks) },
+    ],
+    (id, field) => closeEdit(id, field)
   );
-  renderTasks(taskList, nonDeletedTasks, visibleIds, (id, field) => closeEdit(id, field));
 }
 
 // 3. Refetch-and-render: the single refresh path every mutation and the
@@ -153,10 +167,28 @@ taskForm.addEventListener("submit", (event) => {
 // container instead of one per <li>, so render.js never has to rebind
 // anything when it reuses an element across a refresh. `nextCompleted` is
 // the user's actual intent (the checkbox's own new value) and is captured
-// now; `task` is everything else on the document, and is re-read fresh
-// inside the queued mutation rather than closed over here, so a title edit
-// committing first is never silently overwritten by this write's stale copy.
-taskList.addEventListener("change", (event) => {
+// now; task state is re-read fresh inside the queued mutation rather than
+// closed over here, so a concurrent edit/delete is never silently
+// overwritten by this write's stale copy.
+//
+// Step 6 (cascade complete): completing a task closes every open descendant
+// too, in the SAME queued mutation (one refetch settles the whole cascade,
+// not one per task). Each closed descendant is stamped
+// `closedByCascadeFrom` with the id of the task the user actually clicked —
+// never a descendant's own immediate parent — so step 7 can reverse exactly
+// this one cascade later by matching that single id, however deep the
+// subtree nests. A descendant that is ALREADY completed is left completely
+// untouched: it was closed by the user directly (or by some earlier,
+// different cascade), not by this one, and restamping it would make step 7
+// reopen something this cascade never actually closed.
+//
+// Un-completing (nextCompleted === false) does NOT reopen cascaded
+// descendants — that reversal is step 7's "un-complete memory", not this
+// step's job. It does reset the clicked task's OWN `closedByCascadeFrom` to
+// null: a task that isn't completed can't still be "closed by" anything, so
+// leaving a stale stamp there would misrepresent an open task as
+// cascade-closed once step 7 goes looking for exactly that stamp.
+taskSection.addEventListener("change", (event) => {
   const checkbox = event.target.closest(".task-item__checkbox");
   if (!checkbox) return;
 
@@ -167,15 +199,52 @@ taskList.addEventListener("change", (event) => {
     const userId = getCurrentUserId();
     const task = getTasks().find((t) => t.id === taskId);
     if (!userId || !task) return; // abandon cleanly — task is gone or user signed out
+
+    if (!nextCompleted) {
+      try {
+        await saveTask(userId, { ...task, completed: false, closedByCascadeFrom: null });
+        await refreshTasks();
+      } catch (error) {
+        console.error("Failed to update task:", error);
+        alert("Could not update task.");
+        checkbox.checked = true; // revert the toggle on failure
+      }
+      return;
+    }
+
+    // Completing: re-derive the subtree fresh, from the full non-deleted
+    // set, at the moment this actually runs — not from whatever was true at
+    // click time (architecture rule: re-read at run time).
+    const tree = buildTree(getTasks().filter((t) => !t.deleted));
+    const descendantsToClose = descendantIds(tree, taskId);
+
     try {
-      // Whole-document write, then refetch — no local mutation of the task in
-      // between (architecture rule 1).
-      await saveTask(userId, { ...task, completed: nextCompleted });
-      await refreshTasks();
+      // The clicked task first, so if the cascade below fails partway, the
+      // one row the user actually pressed still reflects their action.
+      // closedByCascadeFrom is forced to null here regardless of any stale
+      // prior value — this completion is the user's own explicit act, never
+      // a cascade effect.
+      await saveTask(userId, { ...task, completed: true, closedByCascadeFrom: null });
+
+      // Snapshotted once before the loop: nothing else can change these
+      // tasks mid-loop (the mutation queue serializes against every other
+      // enqueued mutation), so re-reading getTasks() per iteration would
+      // only ever see this same snapshot anyway.
+      const currentById = new Map(getTasks().map((t) => [t.id, t]));
+      for (const id of descendantsToClose) {
+        const current = currentById.get(id);
+        if (!current || current.completed) continue; // core rule: never restamp an already-completed descendant
+        await saveTask(userId, { ...current, completed: true, closedByCascadeFrom: taskId });
+      }
     } catch (error) {
-      console.error("Failed to update task:", error);
-      alert("Could not update task.");
-      checkbox.checked = !nextCompleted; // revert the toggle on failure
+      console.error("Failed to complete task:", error);
+      alert("Could not complete the whole cascade. The list has been refreshed to show what actually saved.");
+    } finally {
+      // Always resync with Firestore's real state — whether the cascade
+      // fully succeeded, partially succeeded, or failed on the very first
+      // write — so the view never keeps showing "nothing happened" once
+      // some writes have actually landed.
+      await refreshTasks();
     }
   });
 });
@@ -187,13 +256,18 @@ taskList.addEventListener("change", (event) => {
 // interaction guard (via beginEdit, which also tracks the edit so it can be
 // closed exactly once — see openEdits above) so the 5-minute refresh can't
 // clobber the edit box that is about to appear.
-taskList.addEventListener("click", async (event) => {
+taskSection.addEventListener("click", async (event) => {
   // A link inside a note (built by render.js's linkifier) should behave like
   // a link — opening it must not also drop the note into edit mode.
   if (event.target.closest("a")) return;
 
   const taskId = event.target.closest("li")?.dataset.taskId;
   if (!taskId) return;
+
+  if (event.target.closest(".task-item__move-out-btn")) {
+    await handleMoveOutOfInboxClick(taskId);
+    return;
+  }
 
   if (event.target.closest(".task-item__add-subtask-btn")) {
     await handleAddSubtaskClick(taskId);
@@ -276,6 +350,20 @@ async function handleDeleteClick(taskId) {
 // pattern as delete: the depth/parent checks below are for fast feedback
 // before prompting; the queued mutation re-derives everything it needs from
 // a fresh read so it never acts on a stale parent.
+//
+// Step 5 correction: the new subtask's `inInbox` is inherited from its
+// parent, not hardcoded false. Step 4 reasoned "a task filed under an
+// explicit parent is not a bare capture" — true when the parent is already
+// organized (inInbox: false), so that case is unchanged. But when the
+// parent is itself still sitting in the Inbox (broken down into subtasks
+// before being filed anywhere), a hardcoded false would render the child in
+// the *main* list while its structural parent stays in the *Inbox* section —
+// two different containers, so the child would show up as a detached,
+// unindented "root" nowhere near the task it actually belongs to. Inheriting
+// keeps the whole not-yet-filed subtree together in the Inbox, matching the
+// spec's "a task carries its whole sub-tree with it" rule for Move, applied
+// here at creation time instead of at move time.
+
 async function handleAddSubtaskClick(parentId) {
   const userId = getCurrentUserId();
   const parentTask = getTasks().find((t) => t.id === parentId);
@@ -328,7 +416,7 @@ async function handleAddSubtaskClick(parentId) {
           tags,
           parentId,
           ancestors,
-          inInbox: false, // filed under a real parent, not a bare Inbox capture
+          inInbox: currentParent.inInbox, // see the step 5 correction above
           colors: { foreground: "#ffffff", background: "#10b981" },
         },
         getTasks()
@@ -341,11 +429,54 @@ async function handleAddSubtaskClick(parentId) {
   });
 }
 
+// Step 5: file an Inbox item (and its whole subtree) into the main list —
+// the one explicit way a task ever leaves the Inbox. Nothing else does:
+// completing it, editing its title/note, and the 5-minute refresh all leave
+// `inInbox` untouched. "A task carries its whole sub-tree with it"
+// (product-spec.md's Move bullet) applies here too — every descendant that
+// inherited this task's Inbox membership (handleAddSubtaskClick above) gets
+// filed in the same action, so the group that has always rendered together
+// in the Inbox keeps rendering together afterward, just in the main list.
+async function handleMoveOutOfInboxClick(taskId) {
+  const userId = getCurrentUserId();
+  const task = getTasks().find((t) => t.id === taskId);
+  if (!userId || !task || !task.inInbox) return;
+
+  await enqueueMutation(async () => {
+    const currentUserId = getCurrentUserId();
+    const currentTask = getTasks().find((t) => t.id === taskId);
+    if (!currentUserId || !currentTask || currentTask.deleted || !currentTask.inInbox) {
+      return; // already filed, gone, or user signed out — nothing to do
+    }
+
+    // Re-derive the subtree fresh, from the full non-deleted set, at the
+    // moment this actually runs — not from whatever was true at click time.
+    const tree = buildTree(getTasks().filter((t) => !t.deleted));
+    const idsToFile = [taskId, ...descendantIds(tree, taskId)];
+    const currentById = new Map(getTasks().map((t) => [t.id, t]));
+
+    try {
+      for (const id of idsToFile) {
+        const current = currentById.get(id);
+        if (!current || !current.inInbox) continue; // already filed or gone
+        await saveTask(currentUserId, { ...current, inInbox: false });
+      }
+      // One refetch for the whole subtree, not one per document — this is
+      // still a single logical mutation (architecture rule 1), just one
+      // that happens to touch more than one task at a time.
+      await refreshTasks();
+    } catch (error) {
+      console.error("Failed to move task out of Inbox:", error);
+      alert("Could not move task out of Inbox.");
+    }
+  });
+}
+
 // 5c. Enter commits a title edit (titles are single-line). Escape cancels
 // either edit without saving. Notes are multi-line, so Enter is left alone
 // there — it types a newline — and a note edit only ever commits on blur
 // (the focusout handler below).
-taskList.addEventListener("keydown", (event) => {
+taskSection.addEventListener("keydown", (event) => {
   const isTitleInput = event.target.classList?.contains("task-item__title-input");
   const isNoteInput = event.target.classList?.contains("task-item__note-input");
   if (!isTitleInput && !isNoteInput) return;
@@ -367,7 +498,7 @@ taskList.addEventListener("keydown", (event) => {
 // row: it reverts to the last-saved value and closes, telling the user the
 // edit was discarded, rather than re-alerting every time focus tries to
 // leave.
-taskList.addEventListener("focusout", async (event) => {
+taskSection.addEventListener("focusout", async (event) => {
   const target = event.target;
   const isTitleInput = target.classList?.contains("task-item__title-input");
   const isNoteInput = target.classList?.contains("task-item__note-input");

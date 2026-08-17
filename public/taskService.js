@@ -140,6 +140,13 @@ function normalizeTask(task) {
     // every task that has never been deleted. No Trash UI reads it yet
     // (that's step 9), but the shape must not be reinvented once it does.
     deletedAt: task.deletedAt ?? null,
+    // Step 6 (cascade complete) locks this shape: `closedByCascadeFrom` is
+    // the id of the task the USER completed (never a descendant's immediate
+    // parent), stamped on every descendant that cascade closed — null on any
+    // task that is open, or that was completed directly rather than as a
+    // side effect of an ancestor's completion. Step 7 (un-complete memory)
+    // reverses exactly one cascade by matching this id.
+    closedByCascadeFrom: task.closedByCascadeFrom ?? null,
   };
 }
 

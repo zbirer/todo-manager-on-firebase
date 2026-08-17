@@ -66,7 +66,21 @@
 // `renderTrash`) called from app.js's own separate view-render path, not a
 // third array/parameter on `renderTasks`.
 
+// Step 14 (Tag colors): a row's colors are resolved per-render from the task's
+// TITLE plus the user's tag settings map — never from a stored per-task field
+// (the old `task.colors`, which nothing reads anymore, D3). `resolveTagColor`
+// is pure and lives in tagColors.js alongside `parseTags`, so this module
+// never re-derives what counts as a tag. The settings map itself is threaded
+// in as a parameter rather than imported: render.js must not import store.js
+// (the same module-ownership boundary that makes `onEditCancelled` a callback
+// instead of a direct interaction-guard call).
 import { buildTree, depthOf } from "./taskTree.js";
+import {
+  DEFAULT_TAG_BG,
+  DEFAULT_TAG_FG,
+  readTagColors,
+  resolveTagColor,
+} from "./tagColors.js";
 
 const entriesByTaskId = new Map();
 const focusEntriesByTaskId = new Map();
@@ -300,7 +314,13 @@ export function computeMainListOrderIndex(nonDeletedTasks) {
 // separately, is what avoids that. Focus runs the identical seen/cleanup
 // discipline against its own separate Map and its own separate seen set, so
 // neither pass can ever see (or corrupt) the other's entries.
-export function renderTasks(containers, focusContainer, onEditCancelled) {
+//
+// Step 14: `tagSettings` (store.js's cache, `{ tags: { [tag]: { fg, bg } } }`)
+// is passed in per call rather than imported, per the module boundary above —
+// every row's colors are resolved from it plus the row's own title on every
+// update, which is what makes "re-typing the title to reorder tags changes the
+// color" (product-spec.md §4) need no special re-color step at all.
+export function renderTasks(containers, focusContainer, onEditCancelled, tagSettings) {
   const seenIds = new Set();
   const perContainer = containers.map(({ element, tasks, visibleIds }) => {
     const flattened = flattenTree(tasks, visibleIds);
@@ -336,7 +356,7 @@ export function renderTasks(containers, focusContainer, onEditCancelled) {
         entry = createTaskElement(task.id);
         entriesByTaskId.set(task.id, entry);
       }
-      updateTaskElement(entry, task, depth);
+      updateTaskElement(entry, task, depth, tagSettings);
     }
   }
 
@@ -350,7 +370,7 @@ export function renderTasks(containers, focusContainer, onEditCancelled) {
       entry = createTaskElement(task.id);
       focusEntriesByTaskId.set(task.id, entry);
     }
-    updateTaskElement(entry, task, 0);
+    updateTaskElement(entry, task, 0, tagSettings);
   }
 
   // Drop entries for tasks that left every rendered tree container this pass
@@ -582,16 +602,27 @@ function createTaskElement(taskId) {
   };
 }
 
-function updateTaskElement(entry, task, depth) {
+function updateTaskElement(entry, task, depth, tagSettings) {
   const { li, checkbox, label, titleInput, noteDisplay, noteInput, moveOutButton } = entry;
 
   entry.task = task;
 
   li.className = "task-item" + (task.completed ? " task-item--completed" : "");
-  // Per-task color still comes from stored data (step 14 replaces this with
-  // per-tag colors); everything else about the row's look lives in CSS.
-  li.style.color = task.colors?.foreground || "#ffffff";
-  li.style.backgroundColor = task.colors?.background || "#3b82f6";
+  // Step 14 (D3): the WHOLE ROW takes the winning tag's colors. The winner is
+  // the last COLORED tag in the title string (resolveTagColor, tagColors.js —
+  // read its comment for why "last colored", and for why step 15's quadrant
+  // rule is a different computation that must not reuse this one). Resolved
+  // fresh on every update from the title text itself, never from a stored
+  // per-task field: `task.colors` is no longer read anywhere in this codebase
+  // (it survives on old documents as a dead field, deliberately not migrated).
+  //
+  // No colored tag => the inline styles are CLEARED (empty string removes the
+  // property) rather than set to a hardcoded pair, so the row falls back to
+  // index.html's default `.task-item` colors — one place owns the default look
+  // instead of two that could drift.
+  const rowColors = resolveTagColor(task.title, tagSettings);
+  li.style.color = rowColors ? rowColors.fg : "";
+  li.style.backgroundColor = rowColors ? rowColors.bg : "";
   // Indentation is CSS's job (see the `--depth` rule in index.html) — this
   // only ever supplies the number, computed by taskTree.js's depthOf, never
   // re-derived from `ancestors.length` here.
@@ -611,9 +642,11 @@ function updateTaskElement(entry, task, depth) {
     // `task.tags` is derived FROM `task.title` (app.js's parseTags) — the
     // tag text already sits inline in the title exactly as typed, so the
     // title alone is the whole display. Appending a `[tags]` suffix here
-    // used to show every tag twice. Per-tag color styling is step 14's job
-    // (it needs the settings screen this step doesn't have yet); until then
-    // the title renders as plain text.
+    // used to show every tag twice. Step 14's per-tag colors deliberately do
+    // NOT style individual tag tokens inside the title either — D3 colors the
+    // whole ROW, so the title stays one plain text node and nothing has to
+    // split it into per-tag spans (which would fight `dir="auto"`'s bidi
+    // handling of a mixed Hebrew/English string).
     label.textContent = task.title;
     titleInput.value = task.title;
   }
@@ -989,7 +1022,7 @@ function updateTrashElement(entry, task) {
 // this file) is what keeps a task's Overdue row independent of its
 // normal-place and Focus rows, the same one-Map-per-container pattern
 // `trashEntriesByTaskId`/`focusEntriesByTaskId` already established.
-export function renderOverdue(container, tasks, onEditCancelled) {
+export function renderOverdue(container, tasks, onEditCancelled, tagSettings) {
   const seenIds = new Set(tasks.map((task) => task.id));
 
   for (const task of tasks) {
@@ -998,7 +1031,10 @@ export function renderOverdue(container, tasks, onEditCancelled) {
       entry = createTaskElement(task.id);
       overdueEntriesByTaskId.set(task.id, entry);
     }
-    updateTaskElement(entry, task, 0); // flat (D4/D2 precedent) — no tree, no depth
+    // Flat (D4/D2 precedent) — no tree, no depth. `tagSettings` (step 14) is
+    // threaded through here for the same reason renderTasks takes it: an
+    // Overdue row is the same full task row and takes the same tag colors.
+    updateTaskElement(entry, task, 0, tagSettings);
   }
 
   // Same cleanup rule as Focus's own pass in renderTasks: a task leaving the
@@ -1015,4 +1051,124 @@ export function renderOverdue(container, tasks, onEditCancelled) {
   }
 
   reconcileChildren(container, tasks.map((task) => overdueEntriesByTaskId.get(task.id).li));
+}
+
+// --- Tag settings rendering (step 14) ---------------------------------------
+// D4: the Tag Settings page is a SCREEN — a fourth `currentView` panel in
+// app.js, following step 9's Trash and step 13's Overdue precedent exactly,
+// not a fourth navigation pattern. This function is its `renderTrash`
+// equivalent: app.js decides WHICH tags to list (D5's union) and in what
+// order; this only turns that list into DOM.
+//
+// Its own Map, like every other container in this file — but unlike the other
+// four this one is keyed by TAG NAME, not task id, because a tag is not a
+// task. It is deliberately NOT wired into CONTEXT_MAPS: those are row-shaped,
+// task-addressed, edit-capable containers, and a settings row shares none of
+// that (no checkbox, no title/note/due editor, no drag handle, no depth).
+//
+// Each row carries `dataset.tagName` the same way a task row carries
+// `dataset.taskId`, which is how app.js's delegated listeners on #task-section
+// tell a color change on this screen from a checkbox change on a task row.
+const settingsEntriesByTagName = new Map();
+
+// `tagNames` is already ordered and de-duplicated by app.js (tagColors.js's
+// collectTagNames). `tagSettings` supplies each row's current colors, read
+// through the same `readTagColors` validator every other consumer uses, so a
+// malformed entry shows as "no colors assigned" here rather than pushing an
+// invalid value into an `<input type="color">` (which would silently coerce it
+// to black and make bad data look like a deliberate choice).
+export function renderSettings(container, tagNames, tagSettings) {
+  const seenNames = new Set(tagNames);
+
+  for (const name of tagNames) {
+    let entry = settingsEntriesByTagName.get(name);
+    if (!entry) {
+      entry = createSettingsElement(name);
+      settingsEntriesByTagName.set(name, entry);
+    }
+    updateSettingsElement(entry, name, tagSettings);
+  }
+
+  for (const name of settingsEntriesByTagName.keys()) {
+    if (!seenNames.has(name)) settingsEntriesByTagName.delete(name);
+  }
+
+  reconcileChildren(container, tagNames.map((name) => settingsEntriesByTagName.get(name).li));
+}
+
+// Built once per tag name, then only updated — the same keyed-reuse discipline
+// as createTaskElement, and for a related reason: a re-render happens after
+// every settings write, and rebuilding the row would tear down the very
+// `<input type="color">` the user just used (dropping its focus, and on some
+// platforms closing the native picker) on the change it fired itself.
+//
+// Neither input carries its own listener — same event-delegation rule as every
+// other control in this app (see createTaskElement). app.js's delegated
+// `change` listener on #task-section recognizes `.tag-setting__color` and its
+// delegated `click` listener recognizes `.tag-setting__clear-btn`.
+function createSettingsElement(tagName) {
+  const li = document.createElement("li");
+  li.className = "tag-setting";
+  li.dataset.tagName = tagName;
+
+  // The tag itself, painted in its own colors — this is the row's preview, so
+  // the user sees the pair they are choosing before hunting for a task that
+  // carries the tag. `dir="auto"` for the same mixed-script reason every other
+  // user-text element in this file sets it.
+  const preview = document.createElement("span");
+  preview.className = "tag-setting__preview";
+  preview.dir = "auto";
+  preview.textContent = tagName;
+  li.appendChild(preview);
+
+  const fgLabel = document.createElement("label");
+  fgLabel.className = "tag-setting__field";
+  fgLabel.appendChild(document.createTextNode("Text "));
+  const fgInput = document.createElement("input");
+  fgInput.type = "color";
+  fgInput.className = "tag-setting__color";
+  fgInput.dataset.colorField = "fg"; // read by app.js's change handler
+  fgLabel.appendChild(fgInput);
+  li.appendChild(fgLabel);
+
+  const bgLabel = document.createElement("label");
+  bgLabel.className = "tag-setting__field";
+  bgLabel.appendChild(document.createTextNode("Background "));
+  const bgInput = document.createElement("input");
+  bgInput.type = "color";
+  bgInput.className = "tag-setting__color";
+  bgInput.dataset.colorField = "bg";
+  bgLabel.appendChild(bgInput);
+  li.appendChild(bgLabel);
+
+  // Removes the tag's colors entirely, so its tasks fall back to the default
+  // row style — distinct from "picking white on blue", which is a real
+  // assignment that still wins the last-colored-tag race (D2). Only shown when
+  // there is actually something to clear.
+  const clearButton = document.createElement("button");
+  clearButton.type = "button";
+  clearButton.className = "tag-setting__clear-btn";
+  clearButton.textContent = "Clear colors";
+  clearButton.setAttribute("aria-label", `Clear colors for ${tagName}`);
+  li.appendChild(clearButton);
+
+  return { li, preview, fgInput, bgInput, clearButton };
+}
+
+function updateSettingsElement(entry, tagName, tagSettings) {
+  const colors = readTagColors(tagSettings?.tags?.[tagName]);
+
+  // An unassigned tag's inputs still have to show SOME valid `#rrggbb` (the
+  // control has no "unset" state), so they show the defaults a first
+  // assignment would produce — what the user picks from, not a claim that the
+  // tag is already colored. `clearButton`'s visibility is what actually says
+  // whether this tag has colors.
+  entry.fgInput.value = colors ? colors.fg : DEFAULT_TAG_FG;
+  entry.bgInput.value = colors ? colors.bg : DEFAULT_TAG_BG;
+
+  entry.preview.style.color = colors ? colors.fg : "";
+  entry.preview.style.backgroundColor = colors ? colors.bg : "";
+  entry.preview.classList.toggle("tag-setting__preview--unset", !colors);
+
+  entry.clearButton.style.display = colors ? "" : "none";
 }

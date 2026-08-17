@@ -50,10 +50,20 @@ export const addTask = async (userId, taskDetails, existingTasks = []) => {
       .map((t) => t.order);
     const minSiblingOrder = siblingOrders.length > 0 ? Math.min(...siblingOrders) : 0;
 
+    // Step 14 (D3): `colors` is NOT written here anymore. A row's colors now
+    // come from the winning tag in its title plus the user's tag settings
+    // document (tagColors.js's resolveTagColor), resolved on every render —
+    // so a stored per-task color field has no reader left, and writing one
+    // would be writing data nothing consumes. Documents created before this
+    // step keep their now-dead `colors` field: this repo has no migration
+    // tooling, the field is harmless (isValidTask() never mentions it, and
+    // nothing reads it), and a whole-document `saveTask` on such a task
+    // faithfully rewrites it rather than dropping it — deliberately not
+    // migrated, not overlooked.
     const newTask = {
       title: taskDetails.title,
       // Defaults below mirror isValidTask()'s required booleans, so a caller
-      // passing only { title, tags, colors } still writes a valid document.
+      // passing only { title, tags } still writes a valid document.
       completed: taskDetails.completed ?? false,
       deleted: taskDetails.deleted ?? false,
       pinned: taskDetails.pinned ?? false,
@@ -62,10 +72,6 @@ export const addTask = async (userId, taskDetails, existingTasks = []) => {
       ancestors: taskDetails.ancestors ?? [],        // For task hierarchy
       order: taskDetails.order ?? minSiblingOrder - 1000,
       tags: taskDetails.tags || [],                 // e.g., ["#private", "@office"]
-      colors: {
-        foreground: taskDetails.colors?.foreground || "#000000",
-        background: taskDetails.colors?.background || "#ffffff"
-      },
       createdAt: serverTimestamp(),                 // Track task age
       updatedAt: serverTimestamp(),
       dueDate: taskDetails.dueDate ? new Date(taskDetails.dueDate) : null

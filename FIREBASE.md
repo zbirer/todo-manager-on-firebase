@@ -151,10 +151,43 @@ Each task document:
 | `closedByCascadeFrom` | string \| null | Set by cascade-complete (step 6): the id of the task the user actually completed (never a descendant's immediate parent), stamped on every descendant that completion closed. `null` on an open task, or one completed directly. Un-completing (step 7) reopens every non-deleted task whose `closedByCascadeFrom` matches the id being un-completed — a global filter, not a subtree walk — and resets it to `null` |
 | `deletedByCascadeFrom` | string \| null | Set by cascade-delete (step 8), exactly symmetric to `closedByCascadeFrom` above: the id of the task the user actually clicked Delete on, stamped on every live descendant that deletion swept up. `null` on the clicked task itself and on anything deleted on its own. Read by the Trash screen's Restore (step 9): restoring a task also restores every task whose `deletedByCascadeFrom` matches it — a global stamp filter, not a subtree walk — and resets it to `null` on everything restored |
 | `tags` | string[] | Optional, <= 50 entries. Parsed from the title by `/([#@]\w+)/g` — `#food`, `@shop` |
-| `colors.foreground` | string | Hex; app.js currently sends `#ffffff` |
-| `colors.background` | string | Hex; app.js currently sends `#10b981` |
+| `colors` | map — **no longer written** | Step 14 (Tag colors) stopped writing this and stopped reading it. A row's colors now come from the winning tag in its title plus the user's settings document (see `users/{uid}/meta/settings` below), resolved on every render — there is no per-task color field anymore. Documents created before step 14 keep a `{ foreground, background }` map here as a **dead field**: deliberately not migrated (this repo has no migration tooling, `isValidTask()` never mentions it, nothing reads it, and a whole-document `saveTask` faithfully rewrites it) |
 | `createdAt` | timestamp | `serverTimestamp()` |
 | `dueDate` | timestamp \| null | Step 13 (Dates): a Firestore Timestamp at **local midnight** of the due day, or `null`. Set/cleared inline (click the row's due-date display, or the context menu's "Set/Change due date"), committed via whole-document `saveTask` on blur — never `updateDoc`. Parsed from the `<input type="date">`'s `"YYYY-MM-DD"` value with `new Date(year, month-1, day)` (never the string form of `new Date(...)`, which parses as UTC and lands a day early west of Greenwich); read back the same way in reverse. Read by the Overdue screen (`isOverdueTask`, render.js): overdue iff the due date's local calendar day is strictly before today's — due today is not overdue. Never mentioned by `isValidTask()`, so no rules change was needed |
+
+#### Settings document
+
+Written by [public/settingsService.js](public/settingsService.js), new in step
+14 (Tag colors). One document per user holds every per-user preference:
+
+```
+users/{userId}/meta/settings
+```
+
+The document id is the literal string `settings` — one document, not one per
+tag. `isValidSettings()` in [firestore.rules](firestore.rules) is the contract,
+and it already existed before any code wrote here: it constrains only
+`weekStart`'s value and `tags`'s type and key count, and says nothing about an
+entry's shape.
+
+| Field | Type | Notes |
+|---|---|---|
+| `tags` | map, <= 500 keys | Keyed by the **full tag token including its sigil** (`#work` and `@work` are different tags). Each value is an **object**, not a color string — step 15 (quadrant mapping) adds a `quadrant` key to this same entry rather than forking a second map |
+| `tags.<tag>.fg` | string | Foreground color, `#rrggbb`. Written by the Tag Settings screen. An entry missing either half, or holding anything that isn't a 6-digit hex string, reads as "no colors assigned" rather than being passed through to the DOM |
+| `tags.<tag>.bg` | string | Background color, `#rrggbb`. Same rules as `fg` — a color is only ever assigned as a complete pair, so a single change through the UI always writes both |
+| `weekStart` | `'sunday'` \| `'monday'` | **Not written by any code yet** — step 20 (advanced search) owns it. Already validated by `isValidSettings()`. Reads and writes carry it through untouched, so a step-14 color change can never erase it out of the same whole-document write |
+
+Reads go through `getDoc` and normalize on the way in: a document that does not
+exist yet (the normal case for every user until their first color assignment),
+one with no `tags` field, or one with a malformed entry all degrade to "no
+colors" without throwing. Writes are whole-document `setDoc` routed through the
+same mutation queue as every task write — never `updateDoc`, matching the app's
+"a later write replaces the task entirely" rule.
+
+A row's color is resolved per render as: parse the task's **title** for tags in
+**string order**, then take the **last one that has colors assigned**. In a
+Hebrew title that is the tag furthest *left* on screen. Nothing about a task's
+colors is stored on the task.
 
 Reads use `query(..., orderBy("createdAt", "desc"))` — a single-field sort, served
 by the automatic index. That is why [firestore.indexes.json](firestore.indexes.json)

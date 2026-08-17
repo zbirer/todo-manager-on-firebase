@@ -10,6 +10,14 @@ const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 let tasks = [];
 let currentUserId = null;
+// Step 14 (D9): the tag settings cache — the architecture always specified
+// that this store, not render.js or a module-level global in app.js, owns it.
+// Refreshed alongside `tasks` by app.js's one refreshTasks path (per-tag
+// colors are read on every render, so a stale cache here would be a stale
+// row color everywhere at once) and cleared by `invalidate()` below on
+// sign-out. Shape is `{ tags: { [tagName]: { fg, bg, ... } } }`, normalized on
+// read by settingsService.js — never raw document data.
+let tagSettings = { tags: {} };
 
 let refreshTimerId = null;
 let refreshCallback = null;
@@ -32,11 +40,24 @@ export function setCurrentUserId(userId) {
   currentUserId = userId;
 }
 
+export function getTagSettings() {
+  return tagSettings;
+}
+
+export function setTagSettings(newSettings) {
+  tagSettings = newSettings;
+}
+
 // Clears everything the store holds. Called on sign-out so a second account
 // signing in on the same page never sees the previous user's tasks flash by.
+// Step 14: that reasoning covers tag settings identically — a signed-out
+// session holding the previous user's color map would repaint the NEXT user's
+// rows from it the instant their tasks arrive, before their own settings
+// document has been fetched.
 export function invalidate() {
   tasks = [];
   currentUserId = null;
+  tagSettings = { tags: {} };
   interactionDepth = 0;
   refreshPendingInteraction = false;
 }

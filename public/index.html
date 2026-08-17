@@ -74,8 +74,14 @@
       font-size: 14px;
       color: #374151;
     }
-    /* Per-task color still comes from the stored `colors` field (set inline
-       by render.js); everything else about a row's look lives here.
+    /* Step 14 (D3): the colors below are the DEFAULT row style — what a task
+       with no colored tag looks like. render.js resolves the winning tag's
+       colors per render and sets them inline on the <li>, overriding these;
+       when no tag wins it CLEARS those inline properties rather than writing a
+       hardcoded pair, so this rule is the single owner of the default look.
+       (Before step 14 these same two values were the fallback hardcoded in
+       render.js, read off a stored per-task `colors` field that nothing reads
+       anymore.)
        flex-wrap lets the note row (flex-basis: 100%, below) drop onto its
        own line under the checkbox+title row instead of squeezing into it. */
     li.task-item {
@@ -85,6 +91,8 @@
       gap: 8px;
       padding: 10px;
       margin: 5px 0;
+      color: #ffffff;
+      background-color: #3b82f6;
       /* Depth comes from taskTree.js's depthOf, set as a custom property by
          render.js (li.style.setProperty("--depth", depth)) — this is the
          only place the number becomes a visual indent. */
@@ -370,6 +378,85 @@
       color: white;
       margin-bottom: 8px;
     }
+    /* Step 14 (Tag colors, D4): the Tag Settings screen — a fourth view panel,
+       styled like Trash's and Overdue's for the same reason they match each
+       other: it is the same "step out of the main view into a dedicated
+       screen" pattern, not a new one. Step 15 adds a quadrant control to each
+       row here; the row is a flex line precisely so that is one more child,
+       not a re-layout. */
+    #settings-view h2 {
+      font-size: 16px;
+      margin-bottom: 4px;
+    }
+    #settings-count {
+      font-size: 13px;
+      color: #6b7280;
+      margin: 4px 0 12px;
+    }
+    #settings-btn {
+      background-color: #4b5563;
+      color: white;
+      margin: 8px 0;
+    }
+    #settings-back-btn {
+      background-color: #6b7280;
+      color: white;
+      margin-bottom: 8px;
+    }
+    li.tag-setting {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 10px;
+      margin: 5px 0;
+      border-radius: 4px;
+      background-color: #e5e7eb;
+      color: #1f2937;
+    }
+    /* The tag rendered in its own assigned colors — the row's preview, so the
+       pair is visible here without hunting for a task that carries the tag.
+       render.js sets color/background inline when the tag HAS colors; the
+       --unset modifier below is what an uncolored tag looks like instead. */
+    .tag-setting__preview {
+      flex: 1;
+      min-width: 90px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 14px;
+      word-break: break-word;
+    }
+    .tag-setting__preview--unset {
+      border: 1px dashed #9ca3af;
+      opacity: 0.75;
+    }
+    .tag-setting__field {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 12px;
+      color: #374151;
+    }
+    /* `input` above is styled at 70% width for the add-task box; a color swatch
+       has to opt out of that or it takes the whole row. */
+    .tag-setting__color {
+      width: 36px;
+      height: 26px;
+      padding: 0;
+      border: 1px solid #9ca3af;
+      border-radius: 4px;
+      background: none;
+      cursor: pointer;
+    }
+    .tag-setting__clear-btn {
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 500;
+      background-color: #6b7280;
+      color: white;
+      flex-shrink: 0;
+    }
   </style>
 </head>
 <body>
@@ -408,6 +495,9 @@
            below for why this is a separate VIEW (Trash's precedent), not a
            section folded into this main view the way Focus is. -->
       <button type="button" id="overdue-btn">Overdue</button>
+      <!-- Step 14 (D4): opens the Tag Settings screen — see #settings-view
+           below. Step 15's quadrant mapping shares this same screen. -->
+      <button type="button" id="settings-btn">Tag settings</button>
 
       <!-- Step 12 (D1/D8): Focus — pinned tasks, hand-picked (D2: flat, no
            subtree pulled in), sorted by the same comparator as the main list
@@ -464,6 +554,24 @@
       <h2>Overdue</h2>
       <p id="overdue-count"></p>
       <ul id="overdue-list"></ul>
+    </div>
+
+    <!-- Step 14 (D4): the Tag Settings screen — a SCREEN following
+         #trash-view/#overdue-view's exact precedent (a currentView value +
+         app.js's dispatch table), deliberately not a fourth navigation
+         pattern. Rows are keyed by TAG NAME (`data-tag-name`), not task id:
+         a tag is not a task, so these rows share none of the task row's shape
+         (no checkbox, no inline title/note/due editor, no drag handle, no
+         depth). Nested inside #task-section for the same reason the other two
+         screens are — it reaches app.js's existing delegated change/click
+         listeners instead of needing its own set. Per product-spec.md §7 this
+         is also where step 15's quadrant assignment lands: one screen owns
+         everything about a tag. -->
+    <div id="settings-view" hidden>
+      <button type="button" id="settings-back-btn">← Back</button>
+      <h2>Tag settings</h2>
+      <p id="settings-count"></p>
+      <ul id="settings-list"></ul>
     </div>
   </div>
 

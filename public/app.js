@@ -6,6 +6,17 @@
 
 import { logInWithGoogle, logOut, monitorAuthState } from "./auth.js";
 import { addTask, fetchTasks, saveTask, softDeleteTask, purgeTask } from "./taskService.js";
+import { fetchSettings, saveSettings } from "./settingsService.js";
+import {
+  // Step 14: `parseTags` MOVED here from app.js — the tag-color resolver needs
+  // the exact same rule, and step 2's decision is that exactly one place
+  // decides what counts as a tag. Same function, same regex, new home.
+  parseTags,
+  collectTagNames,
+  readTagColors,
+  DEFAULT_TAG_FG,
+  DEFAULT_TAG_BG,
+} from "./tagColors.js";
 import {
   buildTree,
   depthOf,
@@ -28,11 +39,16 @@ import {
   beginInteraction,
   endInteraction,
   enqueueMutation,
+  // Step 14 (D9): store.js owns the tag settings cache, refreshed alongside
+  // tasks by refreshTasks below and cleared by invalidate() on sign-out.
+  getTagSettings,
+  setTagSettings,
 } from "./store.js";
 import {
   renderTasks,
   renderTrash,
   renderOverdue,
+  renderSettings,
   sortTasks,
   // Step 13 (D5): the one shared ordering mechanism Focus and Overdue both
   // sort by — see render.js's own comment on why this is exported rather
@@ -91,15 +107,6 @@ const TRASH_CAP = 50;
 // the JS engine's sort happens to leave equal elements, not however the user
 // last dragged them. See computeReorderOrder below for what happens instead.
 const ORDER_RENUMBER_EPSILON = 1e-6;
-
-// Extracts #tag / @context tokens from a title string, in the order they
-// appear. Shared by the add-task submit handler and the title-edit commit
-// handler below so both derive tags from the exact same rule — per the
-// spec, editing the title is the *only* way a task's tags change, so there
-// must be exactly one place that decides what counts as a tag.
-function parseTags(title) {
-  return title.match(/([#@]\w+)/g) || [];
-}
 
 // Tracks which edits currently hold an open interaction, keyed by
 // `${taskId}:${field}`, where `field` is `"title"`/`"note"` for an edit on a
@@ -214,6 +221,16 @@ const overdueBtn = document.getElementById("overdue-btn");
 const overdueBackBtn = document.getElementById("overdue-back-btn");
 const overdueCountText = document.getElementById("overdue-count");
 const overdueList = document.getElementById("overdue-list");
+// Step 14 (D4): the Tag Settings screen — a FOURTH view panel, following the
+// exact same Trash/Overdue precedent rather than inventing a modal or a fourth
+// navigation pattern. Step 15 (quadrant mapping) adds its column to this same
+// screen (product-spec.md §7: "it is the same screen that sets each tag's
+// colors").
+const settingsView = document.getElementById("settings-view");
+const settingsBtn = document.getElementById("settings-btn");
+const settingsBackBtn = document.getElementById("settings-back-btn");
+const settingsCountText = document.getElementById("settings-count");
+const settingsList = document.getElementById("settings-list");
 
 // 1b. Task context menu (step 8) — right-click or long-press on a row.
 // `taskMenu` is one shared element (declared in index.html, outside both
@@ -328,17 +345,20 @@ const views = {
   // exact Trash precedent (a currentView entry + the dispatch table) rather
   // than step 12's in-main-view Focus section.
   overdue: renderOverdueView,
+  // Step 14 (D4): the Tag Settings screen — same precedent again, third time.
+  settings: renderSettingsView,
 };
 
-// Switches which of the three panels is visible and renders it fresh. Used
-// by the Trash/Overdue/Back buttons below and by sign-out (which must not
-// leave a non-main panel showing under a "please sign in" message for the
+// Switches which of the four panels is visible and renders it fresh. Used
+// by the Trash/Overdue/Settings/Back buttons below and by sign-out (which must
+// not leave a non-main panel showing under a "please sign in" message for the
 // next user).
 function switchView(view) {
   currentView = view;
   mainView.hidden = view !== "main";
   trashView.hidden = view !== "trash";
   overdueView.hidden = view !== "overdue";
+  settingsView.hidden = view !== "settings";
   views[view]();
 }
 
@@ -346,6 +366,8 @@ trashBtn.addEventListener("click", () => switchView("trash"));
 trashBackBtn.addEventListener("click", () => switchView("main"));
 overdueBtn.addEventListener("click", () => switchView("overdue"));
 overdueBackBtn.addEventListener("click", () => switchView("main"));
+settingsBtn.addEventListener("click", () => switchView("settings"));
+settingsBackBtn.addEventListener("click", () => switchView("main"));
 
 function renderMainView() {
   const showCompleted = showCompletedToggle.checked;
@@ -398,7 +420,11 @@ function renderMainView() {
       { element: taskList, tasks: mainTasks, visibleIds: visibleIdsFor(mainTasks) },
     ],
     { element: focusList, tasks: focusTasks },
-    (id, field) => closeEdit(id, field)
+    (id, field) => closeEdit(id, field),
+    // Step 14: the tag settings cache, passed in rather than imported by
+    // render.js (module boundary — see render.js's own comment). Every row's
+    // colors are resolved from this plus the row's own title on every render.
+    getTagSettings()
   );
 }
 
@@ -461,7 +487,27 @@ function renderOverdueView() {
     .filter((task) => isOverdueTask(task))
     .sort((a, b) => (orderIndex.get(a.id) ?? Infinity) - (orderIndex.get(b.id) ?? Infinity));
   overdueCountText.textContent = `Overdue — ${overdueTasks.length}`;
-  renderOverdue(overdueList, overdueTasks, (id, field) => closeEdit(id, field));
+  renderOverdue(overdueList, overdueTasks, (id, field) => closeEdit(id, field), getTagSettings());
+}
+
+// Step 14 (D4/D5): the Tag Settings screen. The listed tags are the union of
+// every tag on a non-deleted task and every tag already present in the
+// settings map (collectTagNames, tagColors.js) — the second half is what stops
+// deleting the last task carrying a tag from silently orphaning that tag's
+// configured color with no way left to see or clear it.
+//
+// Deleted tasks are excluded from the first half deliberately: a tag that only
+// survives on a trashed task is not part of the user's live vocabulary, and if
+// that tag has colors assigned, the settings-map half lists it anyway.
+function renderSettingsView() {
+  const tagSettings = getTagSettings();
+  const nonDeletedTasks = getTasks().filter((task) => !task.deleted);
+  const tagNames = collectTagNames(nonDeletedTasks, tagSettings);
+  settingsCountText.textContent =
+    tagNames.length === 0
+      ? "No tags yet — add a #tag or @tag to a task title."
+      : `${tagNames.length} tag${tagNames.length === 1 ? "" : "s"}`;
+  renderSettings(settingsList, tagNames, tagSettings);
 }
 
 // Picks which deleted documents to permanently purge once the Trash holds
@@ -485,8 +531,14 @@ async function refreshTasks() {
   const userId = getCurrentUserId();
   if (!userId) return;
   try {
-    const tasks = await fetchTasks(userId);
+    // Step 14 (D9): the settings document is refetched on the SAME path and in
+    // the SAME pass as the tasks, because per-tag colors are read on every
+    // render — a settings cache refreshed on some other schedule would leave
+    // rows painted from a stale color map after any settings write. Issued
+    // together (not sequentially) since neither read depends on the other.
+    const [tasks, settings] = await Promise.all([fetchTasks(userId), fetchSettings(userId)]);
     setTasks(tasks);
+    setTagSettings(settings);
     // Re-render whichever panel is actually on screen — step 9 added a
     // second one (Trash), and every mutation (including a restore performed
     // FROM the Trash) still funnels through this one refresh path.
@@ -530,7 +582,9 @@ taskForm.addEventListener("submit", (event) => {
         {
           title: rawTitle,
           tags,
-          colors: { foreground: "#ffffff", background: "#10b981" }, // green styling
+          // Step 14 (D3): no `colors` — a row's colors come from its winning
+          // tag now (tagColors.js's resolveTagColor), never from a stored
+          // per-task field, so there is nothing to hardcode at creation time.
         },
         getTasks() // read fresh at execution time, not at submit time
       );
@@ -583,6 +637,20 @@ taskForm.addEventListener("submit", (event) => {
 // explicit, one-click act; silently resurrecting a pin the user never asked
 // to restore on reopen would be worse than just making them re-pin it.
 taskSection.addEventListener("change", (event) => {
+  // Step 14: the Tag Settings screen's color inputs are reached through this
+  // same delegated listener (#settings-view is nested inside #task-section for
+  // exactly that reason, following #trash-view/#overdue-view's precedent).
+  // Checked before the checkbox branch because a settings row carries no
+  // `data-task-id` at all — everything below this point assumes one.
+  // `change` (not `input`) so a drag through a native color picker commits
+  // once on release, not once per intermediate shade.
+  const colorInput = event.target.closest(".tag-setting__color");
+  if (colorInput) {
+    const tagName = colorInput.closest("li")?.dataset.tagName;
+    if (tagName) handleTagColorChange(tagName, colorInput.dataset.colorField, colorInput.value);
+    return;
+  }
+
   const checkbox = event.target.closest(".task-item__checkbox");
   if (!checkbox) return;
 
@@ -682,6 +750,16 @@ taskSection.addEventListener("click", async (event) => {
   // A link inside a note (built by render.js's linkifier) should behave like
   // a link — opening it must not also drop the note into edit mode.
   if (event.target.closest("a")) return;
+
+  // Step 14: the Tag Settings screen's "Clear colors" button, reached through
+  // this same delegated listener. Checked before `taskId` is required, since a
+  // settings row is keyed by tag name and has no task id at all.
+  const clearColorsBtn = event.target.closest(".tag-setting__clear-btn");
+  if (clearColorsBtn) {
+    const tagName = clearColorsBtn.closest("li")?.dataset.tagName;
+    if (tagName) await handleTagClearColors(tagName);
+    return;
+  }
 
   const li = event.target.closest("li");
   const taskId = li?.dataset.taskId;
@@ -999,7 +1077,8 @@ async function handleAddSubtaskClick(parentId) {
           parentId,
           ancestors,
           inInbox: currentParent.inInbox, // see the step 5 correction above
-          colors: { foreground: "#ffffff", background: "#10b981" },
+          // Step 14 (D3): no `colors` here either — same reason as the
+          // add-task handler above.
         },
         getTasks()
       );
@@ -1089,6 +1168,85 @@ async function handleTogglePinClick(taskId) {
       await refreshTasks();
     }
   });
+}
+
+// Step 14 (D9): the one write path for the settings document. Both settings
+// mutations below (assign a color, clear a tag's colors) funnel through this,
+// so there is exactly one place that builds the whole-document payload.
+//
+// Shape rules, all load-bearing:
+//   - Whole-document `setDoc` via saveSettings — never `updateDoc`, matching
+//     step 1's conflict rule and every mutation in this file.
+//   - Routed through `enqueueMutation`, so a settings write can never
+//     interleave with a task write (or another settings write) and land built
+//     from a stale copy of the map.
+//   - The current map is re-read from the store INSIDE the queued mutation,
+//     not captured at click time — the same "re-read at run time" rule every
+//     other handler here follows.
+//   - `finally { await refreshTasks(); }`, the same resync shape as every
+//     other mutation: a failed write must not leave the screen showing a color
+//     that was never saved, and a successful one has to repaint every task row
+//     that the changed tag now colors.
+//
+// `mutate` receives the current tag map and returns the new one. It must not
+// touch anything outside `tags` — step 20's `weekStart` lives in this same
+// document and is carried through untouched by normalizeTagSettings.
+async function updateTagSettings(mutate, failureMessage) {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
+  await enqueueMutation(async () => {
+    const currentUserId = getCurrentUserId();
+    if (!currentUserId) return;
+    const current = getTagSettings();
+    try {
+      await saveSettings(currentUserId, { ...current, tags: mutate(current.tags ?? {}) });
+    } catch (error) {
+      console.error("Failed to save tag settings:", error);
+      alert(failureMessage);
+    } finally {
+      await refreshTasks();
+    }
+  });
+}
+
+// Assigns one half of a tag's color pair (`field` is "fg" or "bg"). A tag with
+// no colors yet starts from the defaults the settings screen was already
+// showing in its inputs, so a single change always produces a COMPLETE entry —
+// a half-written `{ fg }` would read back as "no colors" (readTagColors
+// requires both), which would look like the change silently failed.
+//
+// D7: only `fg`/`bg` are written. The existing entry is spread first so a
+// `quadrant` step 15 later adds survives a color change made after it.
+async function handleTagColorChange(tagName, field, value) {
+  await updateTagSettings(
+    (tags) => {
+      const existing = readTagColors(tags[tagName]);
+      const base = existing ?? { fg: DEFAULT_TAG_FG, bg: DEFAULT_TAG_BG };
+      return {
+        ...tags,
+        [tagName]: { ...(tags[tagName] ?? {}), fg: base.fg, bg: base.bg, [field]: value },
+      };
+    },
+    "Could not save the tag color."
+  );
+}
+
+// Removes a tag's colors so its tasks fall back to the default row style.
+// Deletes only the color keys, not the whole entry — an entry may already
+// carry a step-15 quadrant, and "clear colors" is not "clear everything about
+// this tag". An entry left with no keys at all is kept rather than deleted, so
+// the tag still lists on the settings screen (D5) even if no live task carries
+// it anymore.
+async function handleTagClearColors(tagName) {
+  await updateTagSettings(
+    (tags) => {
+      if (!tags[tagName]) return tags;
+      const { fg, bg, ...rest } = tags[tagName];
+      return { ...tags, [tagName]: rest };
+    },
+    "Could not clear the tag color."
+  );
 }
 
 // Step 13 (D10): the context menu's "Set due date"/"Change due date" item —
@@ -1311,7 +1469,11 @@ taskSection.addEventListener("focusout", async (event) => {
 // needed the way long-press requires below.
 taskSection.addEventListener("contextmenu", (event) => {
   const li = event.target.closest("li");
-  if (!li) return;
+  // Step 14: `dataset.taskId`, not just "some <li>" — the Tag Settings screen's
+  // rows are keyed by tag name and have no task menu of their own, so a
+  // right-click there must fall through to the browser's own menu rather than
+  // being swallowed by a preventDefault for a menu that then refuses to open.
+  if (!li?.dataset.taskId) return;
   event.preventDefault(); // suppress the native OS/browser context menu
   openTaskMenuForTask(li.dataset.taskId, event.clientX, event.clientY, contextForRow(li));
 });
@@ -1819,7 +1981,10 @@ taskSection.addEventListener("pointerdown", (event) => {
   // too would just race the two gestures against the same row.
   if (event.button !== 0) return;
   const li = event.target.closest("li");
-  if (!li) return;
+  // Same step-14 reason as the contextmenu listener above: a Tag Settings row
+  // is an <li> with no task id, and neither gesture this handler starts (drag,
+  // long-press menu) means anything for one.
+  if (!li?.dataset.taskId) return;
 
   // Step 10: a pointerdown on the drag handle starts a drag instead of the
   // long-press timer, full stop — it never even schedules one, which is

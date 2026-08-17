@@ -1,8 +1,8 @@
 # Progress
 
-Last updated: 2026-08-17 — **Steps 1–13 implemented.** Step 14 (Tag colors)
-is next. No signed-in browser walkthrough has been reported back for any step
-yet — the click-path below is still the first thing to run.
+Last updated: 2026-08-17 — **Steps 1–14 implemented.** Step 15 (Quadrant
+mapping) is next. No signed-in browser walkthrough has been reported back for
+any step yet — the click-path below is still the first thing to run.
 
 ## Step table
 
@@ -21,8 +21,8 @@ yet — the click-path below is still the first thing to run.
 | 11 | Drag-to-reparent | done |
 | 12 | Focus / pin | done |
 | 13 | Dates | done |
-| 14 | Tag colors | next |
-| 15 | Quadrant mapping | planned |
+| 14 | Tag colors | done |
+| 15 | Quadrant mapping | next |
 | 16 | Priority ordering | planned |
 | 17 | Tag rename/delete | planned |
 | 18 | Recurrence | planned |
@@ -30,80 +30,67 @@ yet — the click-path below is still the first thing to run.
 | 20 | Search — advanced | planned |
 | 21 | Export / import | planned |
 
-## Resume here — step 14 (Tag colors)
+## Resume here — step 15 (Quadrant mapping)
 
-**Exact next action:** implement step 14, per product-spec.md §4 ("Tagging &
-Dynamic Styling") — specifically the "Visual Color Coding" bullet:
+**Exact next action:** implement step 15, per product-spec.md §7
+("Productivity & Prioritization") — the "Auto-Eisenhower Matrix", "Resolving
+Several Tags" and "Tag Settings Page" bullets. Step 14 built the screen and the
+storage this extends; nothing about either needs redesigning.
 
-- A **tag settings page** lets the user assign a custom **foreground and
-  background color to a specific tag** (`#p1`, `@home`, etc.) — the spec is
-  explicit this is "the **same** tag settings page that assigns matrix
-  quadrants (§7)", i.e. step 15 owns the other half of the same screen. Build
-  the screen so a quadrant column/section is a one-line addition for step 15,
-  not a rewrite.
-- Applying a tag colors the task automatically. **If a task carries more than
-  one colored tag, the color of the LAST tag in the title TEXT wins** — "last"
-  meaning last in the string as typed (§1's rule: character order, not
-  left-to-right screen position, which differ in a Hebrew title with
-  English-tag suffixes reading right-to-left).
-- **Re-typing the title to reorder tags changes the color** — colors are
-  derived from the title's tag order on every render, never cached/stored
-  per-task, so this "just happens" once the derivation is correct; no special
-  re-color step is needed on a title edit.
-- **The tag vocabulary is open** (§7 confirms this for quadrants too, and it
-  applies here identically): a brand-new tag typed into a title must be
-  usable immediately, with no code change and no pre-registration step. An
-  unconfigured tag simply has no color override (falls back to whatever the
-  current default/no-color rendering is) — the settings page is where a color
-  gets ASSIGNED, not where a tag comes into existence.
+- **The screen already exists.** `#settings-view` (index.html), `views.settings`
+  /`renderSettingsView` (app.js), `renderSettings`/`createSettingsElement`/
+  `updateSettingsElement` (render.js). A settings row is a flex line that
+  already holds `[preview] [Text swatch] [Background swatch] [Clear colors]` —
+  adding a quadrant control is one more child of that row plus one more field
+  in the entry object, not a rewrite. product-spec.md §7 is explicit this is
+  "the same screen that sets each tag's colors", and step 14 (D4) built it that
+  way on purpose.
+- **The storage already exists and is already shaped for this.** One document,
+  `users/{uid}/meta/settings`, field `tags: { [tagName]: { fg, bg } }` — the
+  entry is an OBJECT precisely so step 15 adds a `quadrant` key to the SAME
+  entry rather than forking a second map (step 14, D1/D7).
+  `normalizeTagSettings` (tagColors.js) already copies unrecognized entry keys
+  through verbatim, and `handleTagColorChange` (app.js) already spreads the
+  existing entry before writing colors — verified live that a `quadrant` key
+  survives a color change made after it. So the write side needs a sibling of
+  `handleTagColorChange` (a `handleTagQuadrantChange`, same
+  `updateTagSettings(mutate, message)` helper, same whole-document
+  `enqueueMutation`+`saveSettings`+`finally refreshTasks()` shape), not a new
+  write path.
+- **DO NOT reuse the color resolver.** This is the trap step 14 left a comment
+  about in two places (`resolveTagColor` in tagColors.js, and D8 below). Color
+  resolution is *last colored tag in the title string wins*. Quadrant
+  resolution is *urgency and importance each independently take the HIGHEST
+  value any of the task's tags claims, escalating never averaging, across ALL
+  tags* — string position is irrelevant. Two rules, one settings page, one
+  entry object. Write a NEW pure exported function in `tagColors.js` next to
+  `resolveTagColor`; do not parameterize one function to do both.
+- **An unconfigured tag contributes nothing** (§7: "Nothing is ever guessed on
+  my behalf: an unconfigured tag stays silent rather than defaulting into a
+  quadrant"). `readTagColors`'s shape is the precedent — a per-field reader
+  that returns `null` for an entry that doesn't validly carry that field, so a
+  tag can have colors and no quadrant, or a quadrant and no colors.
+- **`firestore.rules` still needs no change.** `isValidSettings()`
+  (firestore.rules:61-65) accepts any `tags` map with <= 500 keys and does not
+  constrain entry shape at all — confirmed by reading it in full for step 14
+  (D6). A `quadrant` key inside an entry passes it exactly as `fg`/`bg` do.
+  Do NOT write `weekStart` — that field belongs to step 20.
+- **Step 16 (priority ordering) is the consumer, not this step.** §7's
+  "Recommended Order" drives the main list's sort via `compareSiblings`
+  (render.js) — that is step 16's seam and step 15 must not touch it. Step 15
+  ends at "every tag can be assigned a quadrant, and a task's quadrant is
+  computable"; making the list actually sort by it is the next step's work.
 
-**What already exists for this step to build on:**
-- **`task.colors.{foreground,background}` already exists as a whole-TASK
-  field**, written once at creation (`app.js`'s add/subtask handlers hardcode
-  green: `{ foreground: "#ffffff", background: "#10b981" }`) and read directly
-  by `render.js`'s `updateTaskElement` (`li.style.color`/`li.style.
-  backgroundColor` from `task.colors`). This is the exact seam step 14
-  replaces — render.js's own comment on those two lines already says so
-  ("Per-task color still comes from stored data (step 14 replaces this with
-  per-tag colors)"). The replacement is a PER-TAG lookup (probably a new
-  top-level doc/collection, e.g. `users/{uid}/tagSettings/{tag}` or a single
-  settings document keyed by tag name — this step's own call to make), keyed
-  by whichever tag wins per the "last tag in the title" rule above, not a
-  field stored on the task document at all. Decide whether `task.colors` stays
-  as a fallback for an untagged task or gets removed entirely — check
-  product-spec.md for whether an untagged task needs a default color.
-- **`parseTags(title)` (app.js) already extracts tags in title-string order**
-  (`title.match(/([#@]\w+)/g)`) every time a title is committed — the "last
-  tag wins" rule is `tags[tags.length - 1]` off that same array, not a new
-  parsing pass.
-- **The Tag Settings Page itself doesn't exist yet** — no screen, no route, no
-  storage. This step (or step 15, sharing the screen) is the first to add a
-  fourth `currentView` entry / a genuinely new UI area, not just a new field
-  on the existing task rows. Decide the view/currentView shape (a fourth panel
-  like Trash/Overdue, or a modal/dialog) before writing storage code — the
-  storage shape should follow the screen's actual read/write pattern, not the
-  other way around.
-- **Step 13's `CONTEXT_MAPS` precedent (render.js)** is what to reach for if
-  tag-colored text needs its own per-row DOM update path — but a per-TAG color
-  is a title-rendering concern (which whole title text gets which color),
-  likely simpler than another edit-mode context: probably just changes what
-  `updateTaskElement` assigns to `li.style.color`/`backgroundColor`, reading a
-  tag-color lookup instead of `task.colors`.
-- **firestore.rules will need a real look** for whatever new collection/
-  document shape holds tag color settings — `isValidTask()` doesn't apply to
-  a document that isn't a task, so a new `match` block (with its own
-  `isValidTagSettings()`-shaped validator) is likely needed. This is new
-  schema, unlike step 13 which reused an already-valid field — read
-  firestore.rules in full before assuming the existing rules cover it.
-
-**Files likely touched:** `public/index.html` (a new tag-settings view/panel,
-a nav entry to reach it), `public/app.js` (the settings screen's own
-read/write handlers, view dispatch), `public/render.js` (`updateTaskElement`'s
-color assignment replaced with a per-tag lookup), possibly a new
-`public/tagService.js` (mirroring `taskService.js`'s shape) if tag settings
-get their own Firestore reads/writes, and `firestore.rules` (a new match block
-for the new collection/document — this step, unlike step 13, DOES need a
-rules change).
+**Files likely touched:** `public/tagColors.js` (the new quadrant resolver +
+a per-entry quadrant reader, alongside the existing color ones),
+`public/render.js` (`createSettingsElement`/`updateSettingsElement` grow a
+quadrant `<select>`), `public/app.js` (`handleTagQuadrantChange` routed
+through the existing `updateTagSettings`, plus one branch in the delegated
+`change` listener next to the existing `.tag-setting__color` branch),
+`public/index.html` (styling for the new control). No change expected to
+`firestore.rules`, `firestore.indexes.json`, `settingsService.js`, or
+`store.js` — the document shape, the write path and the cache all already
+carry this.
 
 **No step has been confirmed in a signed-in browser yet.** Everything below marked
 "verified" was verified unsigned-in, by driving the real modules with synthetic
@@ -176,6 +163,22 @@ a bogus `does not provide an export named ...` error and cost real time once alr
     completed or deleted task that was overdue before that state changed — in the
     same relative order they hold in the main list. Reload the page → the due date,
     its Overdue-screen membership, and the age all survive.
+14. Add a task whose title is Hebrew with TWO English tags separated by Hebrew
+    words, e.g. `לסיים את הדוח #urgent לפני הפגישה @office`. Click "Tag
+    settings" (next to Overdue) → both tags are listed, each with a Text and a
+    Background swatch. Give `#urgent` a red background and `@office` a green
+    one, then click Back → **the task's whole row is GREEN**, because `@office`
+    is the tag typed LAST in the string even though it renders furthest LEFT on
+    screen. Edit the title to swap the two tags' positions and press Enter →
+    the row turns red, with no other action needed. Add a third tag with no
+    colors assigned at the very end of the title → the row STAYS red/green
+    (the last *colored* tag still wins; an uncolored tag never strips a
+    color). A task carrying no colored tag at all renders in the default blue.
+    Back on "Tag settings", press "Clear colors" on a tag → its tasks fall back
+    to blue and the swatch row shows a dashed outline. Delete every task
+    carrying a tag that still has colors → that tag is STILL listed on the
+    settings screen (so its color is not silently orphaned). Reload the page →
+    every color assignment survives.
 
 **Files touched (steps 1–4):**
 - `public/taskService.js` — renamed from `todoService.js`; `addTask`, `fetchTasks`,
@@ -320,6 +323,73 @@ a bogus `does not provide an export named ...` error and cost real time once alr
   `isValidTask()` (confirmed by reading it, not assumed) never mentions
   `dueDate`, so every write this step adds already passed rules before this
   step existed.
+
+**Files touched (step 14):**
+- `public/tagColors.js` — **new module**, pure, no DOM and no Firestore, same
+  standing as `taskTree.js`. `parseTags` MOVED here from app.js (D2: the color
+  resolver needs the identical rule, and step 2's decision is that exactly one
+  place decides what counts as a tag — a second regex would be a second
+  answer). Plus `readTagColors` (per-entry color validator, `#rrggbb` both
+  halves or nothing), `normalizeTagSettings` (D10), `resolveTagColor` (D2 — the
+  last-colored-tag winner, carrying the D8 comment telling step 15 not to reuse
+  it), `collectTagNames` (D5's union), and `DEFAULT_TAG_FG`/`DEFAULT_TAG_BG`.
+- `public/settingsService.js` — **new module**, mirroring `taskService.js`'s
+  shape and both its rules (whole-document `setDoc`, normalize on read).
+  `fetchSettings`/`saveSettings` against `users/{uid}/meta/settings` (D1) —
+  the first code in this repo to touch the `meta` collection at all.
+- `public/store.js` — the `tagSettings` cache the architecture always specified
+  lived here (D9): `getTagSettings`/`setTagSettings`, initialized to
+  `{ tags: {} }`, and cleared by `invalidate()` on sign-out for exactly the
+  reason `tasks` is (a signed-out session holding the previous user's color map
+  would repaint the NEXT user's rows from it).
+- `public/render.js` — `updateTaskElement`'s two `task.colors` lines (whose own
+  comment named this step) replaced with `resolveTagColor(task.title,
+  tagSettings)`; **no colored tag CLEARS the inline properties** rather than
+  writing a hardcoded pair, so index.html's `.task-item` rule is the single
+  owner of the default look (D3). `tagSettings` is threaded in as a parameter
+  on `renderTasks`/`renderOverdue`/`updateTaskElement` rather than imported —
+  render.js must not import store.js, the same module boundary that makes
+  `onEditCancelled` a callback. New `renderSettings`/`createSettingsElement`/
+  `updateSettingsElement` and a fifth Map, `settingsEntriesByTagName` — the
+  first container in this file keyed by something other than a task id, and
+  deliberately NOT wired into `CONTEXT_MAPS` (those are row-shaped,
+  task-addressed, edit-capable containers; a settings row is none of those).
+- `public/app.js` — `parseTags` moved out (now imported from tagColors.js);
+  `views.settings`/`renderSettingsView` and the `settingsView.hidden` toggle in
+  `switchView` (D4, the fourth `currentView` panel, Trash/Overdue's precedent
+  for the third time); `refreshTasks` now fetches tasks and settings together
+  via `Promise.all` and calls `setTagSettings` (D9); `updateTagSettings` (the
+  one settings write path — whole-document `saveSettings` through
+  `enqueueMutation`, current map re-read inside the mutation, `finally { await
+  refreshTasks(); }`) with `handleTagColorChange` and `handleTagClearColors` on
+  top of it; a `.tag-setting__color` branch in the delegated `change` listener
+  and a `.tag-setting__clear-btn` branch in the delegated `click` listener,
+  both placed BEFORE the code that requires a `data-task-id`; the `colors:`
+  literal removed from both `addTask` call sites (D3); and the `contextmenu`
+  /`pointerdown` listeners tightened from `closest("li")` to
+  `closest("li")?.dataset.taskId` so a settings row can't swallow a right-click
+  into a menu that then refuses to open.
+- `public/taskService.js` — `addTask` no longer writes a `colors` field (D3).
+  Existing documents keep theirs as a now-dead field, deliberately not
+  migrated: this repo has no migration tooling, `isValidTask()` never mentions
+  the field, and nothing reads it (`grep -rn "\.colors" public/*.js` returns
+  only two comment lines).
+- `public/index.html` — `#settings-btn`/`#settings-view`/`#settings-back-btn`/
+  `#settings-count`/`#settings-list` (mirroring `#overdue-view`'s exact
+  structure, nested inside `#task-section` for the same shared-listener
+  reason); `.tag-setting*` CSS; and `color`/`background-color` added to the
+  `li.task-item` rule — the default row style now lives in CSS instead of being
+  a hardcoded fallback inside render.js.
+- `FIREBASE.md` — the `colors.foreground`/`colors.background` schema rows
+  rewritten as one "no longer written" row, and a new `users/{uid}/meta/
+  settings` document-shape section added (the file previously described no
+  `meta` document at all, since nothing had ever written one).
+- No change to `firestore.rules` or `firestore.indexes.json` (D6) —
+  `isValidSettings()` (read in full, not assumed) accepts any `tags` map with
+  <= 500 keys and does not constrain entry shape, so every write this step adds
+  already passed rules before this step existed. The rules file has had a
+  `users/{userId}/meta/{docId}` match block since before step 1; step 14 is
+  simply the first client code to use it.
 
 **Verified (actually exercised in a real browser at localhost:5050, unsigned-in, by
 driving the real modules directly):**
@@ -735,6 +805,122 @@ driving the real modules directly):**
     against `app.js`'s import list (both directions, not just grepped for
     existence).
 
+- **Step 14 (Tag colors), verified unsigned-in against the real `tagColors.js`,
+  `store.js`, `render.js` and app.js's actual attached listeners, driven
+  through the real DOM for everything that doesn't require a Firestore write:**
+  - **14a — the RTL winner rule, the item the plan singled out as too weak to
+    catch its own failure. Verified with a real Hebrew title and measured
+    on-screen geometry, not by reading the code.** Title:
+    `לסיים את הדוח #urgent לפני הפגישה @office` (computed `direction: rtl` on
+    the label). `parseTags` returned `["#urgent", "@office"]` — string order.
+    Measuring each tag's actual painted box with a DOM `Range` over the label's
+    own text node: `@office` (string index 34, the LAST tag) rendered at
+    x = 30–84, and `#urgent` (string index 14, the FIRST tag) at x = 183–237 —
+    i.e. **the last-typed tag is the one furthest LEFT on screen**, 153px to
+    the left of the first, with the Hebrew opening word `לסיים` furthest right
+    at x = 307–348. The row's actual painted background was
+    `rgb(34, 197, 94)` — `@office`'s green, not `#urgent`'s
+    `rgb(220, 38, 38)` red. A Latin-only test could not have distinguished
+    these two answers; this one does, in both directions.
+  - **14b — the D2 fallback, both halves.** A task titled
+    `task with #urgent then #nocolor` (last tag has NO color assigned)
+    rendered `rgb(220, 38, 38)` — `#urgent`'s red, i.e. it fell back to the
+    previous COLORED tag rather than being stripped by the uncolored last one.
+    A task carrying only an unconfigured tag rendered with its inline
+    background genuinely CLEARED (`li.style.backgroundColor === ""`) and a
+    computed `rgb(59, 130, 246)` — index.html's default `.task-item` blue, so
+    the fallback is one CSS rule and not a second hardcoded pair in render.js.
+  - **14c — "re-typing the title to reorder tags changes the color", with no
+    re-color step.** `דוח #urgent ואז @office` rendered green
+    (`rgb(34, 197, 94)`); rewriting the SAME task's title to
+    `דוח @office ואז #urgent` and re-rendering turned it red
+    (`rgb(220, 38, 38)`). Nothing but the title text changed.
+  - **14d — every row-shaped container picks the colors up.** A pinned task's
+    Focus row rendered `rgb(250, 204, 21)` (`#work`'s yellow) and an overdue
+    task's Overdue-screen row rendered `rgb(34, 197, 94)` — the `tagSettings`
+    parameter really is threaded through all three render paths, not just the
+    main list.
+  - **14e — D5's union, live on the real settings screen.** With four tags
+    configured and four tags present on tasks, the screen listed exactly
+    `["#nocolor", "#unknownTag", "#urgent", "#work", "@ghost", "@office"]`
+    ("6 tags"): `@ghost` appeared with its purple swatch and a visible "Clear
+    colors" button **despite no live task carrying it** (settings-map-only,
+    the half of D5 that stops a color being silently orphaned), while
+    `#nocolor`/`#unknownTag` appeared with the dashed `--unset` preview and
+    "Clear colors" hidden (task-only, no entry).
+  - **14f — D10, ten malformed/absent settings shapes, each pushed through the
+    real `normalizeTagSettings` and then through a real render.** A missing
+    document (`null`), `{}`, a document with no `tags` field, `tags: "nope"`,
+    an entry that is a string, an entry with named CSS colors
+    (`{fg:"red",bg:"white"}`), an entry with 3-digit hex, a half entry
+    (`{fg}` only), and a `null` entry ALL rendered the row with its inline
+    color cleared and the CSS default showing, and **not one threw**. The
+    contrast case proves the check is real rather than vacuous: a malformed
+    entry sitting alongside a VALID one (`{"#urgent": 42, "@office":
+    {fg:"#ffffff",bg:"#22c55e"}}`) still painted the row green — bad data next
+    to good data doesn't poison the good. A `weekStart: "sunday"` field was
+    also confirmed to survive normalization untouched, which is what keeps a
+    step-14 color write from erasing step 20's setting out of the same
+    whole-document write.
+  - **14g — the settings screen's two event paths genuinely reach app.js's
+    real delegated listeners.** A `change` dispatched on a real color input and
+    a `click` dispatched on a real "Clear colors" button were both observed
+    arriving at `#task-section` itself (`event.currentTarget === taskSection`),
+    each matching its own branch condition and NOT the other's
+    (`closest(".tag-setting__color")` / `closest(".tag-setting__clear-btn")`),
+    with `dataset.tagName === "@office"` and `dataset.colorField === "bg"`
+    resolving correctly, and `dataset.taskId` absent on both — proving the
+    task-row branches further down those same listeners correctly decline to
+    claim a settings row.
+  - **14h — the unsigned-in no-op, so 14g's "nothing changed" isn't a false
+    pass hiding a broken handler.** After both events above,
+    `getTagSettings()` was byte-identical (`JSON.stringify` equal) before and
+    after and `getCurrentUserId()` was `null` — `updateTagSettings`'s own
+    `if (!userId) return` fires before `enqueueMutation` is even reached, so no
+    write was attempted against the live database (same deliberate
+    never-set-a-fake-uid discipline as steps 11–13).
+  - **14i — the write payload and the read path, replicated exactly (the same
+    substitute methodology steps 6–13 established for anything behind a real
+    write).** Replicating `handleTagColorChange`'s merge against the real
+    `readTagColors`/`DEFAULT_TAG_*`: setting only a background on a
+    never-configured tag produced a COMPLETE entry `{fg:"#ffffff",
+    bg:"#0ea5e9"}` that `readTagColors` then accepted (a half-written entry
+    would read back as "no colors" and look like a silently failed save).
+    D7 both ways: a hypothetical step-15 `quadrant:"urgent-important"` key
+    survived a color change (`{fg:"#ffffff", bg:"#facc15",
+    quadrant:"urgent-important"}`), and "Clear colors" removed ONLY `fg`/`bg`,
+    leaving `{quadrant:"urgent-important"}` — the entry itself is kept so the
+    tag still lists (D5). Read path: taking the exact whole-document payload
+    `saveSettings` would `setDoc`, JSON-round-tripping it and pushing it
+    through `normalizeTagSettings` exactly as `fetchSettings` does on the way
+    back in, then re-rendering, repainted the task row to
+    `rgb(14, 165, 233)` — the newly written color.
+  - **Regression after step 14:** a REAL browser click on a title label still
+    opened the inline editor (visible, focused, interaction depth 1); an
+    unrelated re-render left it on the same node with its typed text
+    (`"plain task edited #urgent"`), caret (`[4, 4]`) and focus intact; a real
+    Escape closed it, reverted the label to `"plain task"` and dropped the
+    interaction depth back to exactly 0. The row's color correctly kept
+    following the SAVED title throughout — the unsaved `#urgent` sitting in the
+    open edit box did NOT repaint the row, which is the right behavior (colors
+    follow committed data, and the commit path re-renders). The Overdue screen
+    still counted correctly ("Overdue — 1") with colors applied. Zero console
+    errors across the whole step-14 run, captured by installing a
+    `console.error`/`window.onerror` trip-wire on a genuinely fresh
+    cache-busted load (`fetch(url, {cache:"reload"})` primed on all nine files
+    before navigating) and reading it back empty at the end. `node --check`
+    passed on all seven modules and the import/export cross-check reported
+    `checked 64 named imports — CLEAN`.
+  - **The stale-module-cache trap this document already warns about fired
+    again, exactly as documented.** The very first navigation of this session
+    — against a dev server started fresh, in a tab created fresh — failed with
+    `store.js does not provide an export named 'getTagSettings'`, because the
+    browser's shared HTTP cache (keyed by URL, not by tab or server process)
+    still held the previous session's `store.js`. Priming every module with
+    `fetch(url, {cache:"reload"})` before navigating fixed it, same as last
+    time. That one stale error line stays visible in the console-history tool
+    for the rest of the tab's life and is NOT evidence of a live defect.
+
 **Assumed (written and reasoned about, never exercised signed-in):**
 - Every path that actually reaches Firestore: create, save, soft-delete, and the
   refetch. All browser verification above ran against synthetic in-memory tasks —
@@ -863,6 +1049,48 @@ driving the real modules directly):**
   dragging a row while the Overdue screen is the active view) — Focus's own
   step-12 verification is the closest direct precedent for this exact
   row-shape's interactive behavior.
+
+- **Every real Firestore call step 14 adds — and this step adds a whole new
+  collection's worth.** `fetchSettings`'s `getDoc` and `saveSettings`'s
+  `setDoc` against `users/{uid}/meta/settings` have **never executed once**.
+  Nothing in this repo has ever written a `meta` document, so unlike every
+  previous step there is not even an existing document to have been read
+  successfully. Specifically unverified: that `isValidSettings()` really does
+  accept the `{ tags: { [tag]: { fg, bg } } }` payload this writes (reasoned
+  from reading the rule in full — it constrains only `weekStart`'s value and
+  `tags`'s type and key count — but never exercised against the live server);
+  that a nested map round-trips through Firestore unchanged; that a
+  never-written document really does come back `snapshot.exists() === false`
+  rather than erroring; and that `refreshTasks`'s new `Promise.all` behaves
+  when only one of the two reads fails. What was verified instead, matching
+  steps 6–13's precedent exactly: the write PAYLOAD (14i), the read
+  NORMALIZATION including nine malformed shapes (14f), the DOM event routing
+  into the real handlers (14g), and that staying unsigned-in makes the write
+  genuinely unreachable rather than merely assumed safe (14h).
+- **"Assigning a color survives a full reload" is verified in two halves,
+  stitched by reasoning, not as one unbroken gesture** — same limitation as
+  step 13's identical claim for due dates. The write half is the exact payload
+  replication in 14i; the read half is feeding that payload through the real
+  `normalizeTagSettings` and re-rendering. A genuine reload cannot preserve
+  anything here without a signed-in session, since there is no document.
+- **`saveSettings`'s 500-key cap has never been hit in practice.** It mirrors
+  `isValidSettings()`'s `tags.keys().size() <= 500` client-side for the same
+  reason `taskService.js` mirrors the title/tags caps — a readable message
+  instead of an opaque permission-denied — but neither the client check nor the
+  rule it mirrors has been exercised.
+- **The native `<input type="color">` picker itself was never driven.** The
+  `change` event it fires was dispatched directly on the real input (14g), and
+  the handler chain from there is verified, but no OS color-picker dialog was
+  opened, dragged, or dismissed — browser automation cannot reach it. The
+  related exposure this leaves open: a re-render landing while a picker is
+  physically open would reassign that input's `.value`. The keyed
+  `settingsEntriesByTagName` Map means the ELEMENT itself is never rebuilt (the
+  same protection every inline edit box has had since step 2), so the worst
+  case is a value reassignment, not a torn-down control — but unlike the
+  title/note/due-date editors, a color input has no `editing*` guard flag
+  suppressing that write. Deliberate: adding a fourth edit flag would have to
+  go into `closeAnyOpenEdits` (step 13's review-round rule), and a color input
+  has no commit/cancel lifecycle to hang one on.
 
 ## Decisions
 
@@ -1524,6 +1752,152 @@ driving the real modules directly):**
   hiding bad data instead of surfacing it. A genuinely `null`/absent
   `dueDate` remains completely silent — only the present-but-unparseable
   case logs.
+
+- **step 14 (D1, storage)** — tag settings live in ONE document,
+  `users/{uid}/meta/settings`, in a field `tags: { [tagName]: { fg, bg } }`.
+  Each entry is an **object, not a bare color string**, specifically so step 15
+  (quadrant mapping) extends the SAME entry with a `quadrant` key instead of
+  forking a second map keyed by the same tag names — two maps would be two
+  places a tag can exist, and the spec is explicit that one screen owns
+  everything about a tag. The tag name INCLUDES its sigil (`#work` and `@work`
+  are different tags). One document rather than one per tag because the whole
+  map is read on every refresh and rendered as one screen, and because
+  `isValidSettings()` already validates a `weekStart` field alongside `tags` —
+  a shape that only makes sense for a single shared document. This is the FIRST
+  code in this repo to read or write the `meta` collection; nothing touched it
+  before.
+- **step 14 (D2, the winner rule) — an explicit spec interpretation, recorded
+  rather than made silently.** The winning tag is the **last tag in the typed
+  title string that actually has colors assigned**, found by parsing tags in
+  **string order** (`parseTags`, unchanged since step 2) and scanning that list
+  from the end. Never DOM order, never visual order: in a Hebrew title the
+  browser paints the last-typed tag furthest LEFT (verified: 14a), so anything
+  reading visual position would invert the winner for exactly the titles this
+  app exists to handle. product-spec.md §4 says "the last tag in the title text
+  forces the color"; **read literally that would mean an uncolored last tag
+  STRIPS the task's color** — type `#urgent … @office` where `@office` has no
+  colors and the task would go from red to default. That is surprising and
+  almost certainly not what "forces the color" describes, so the deliberate
+  reading is "last COLORED tag wins" and the literal alternative is explicitly
+  rejected here rather than left as an accident of implementation. If a later
+  step ever wants the literal behavior, this is the entry to argue with.
+- **step 14 (D3, what gets colored)** — the **whole row**, replacing the
+  `task.colors` read that step 13 left behind in `updateTaskElement` (its own
+  comment already named this step). Not individual tag tokens inside the title:
+  colouring per-token would mean splitting the title into spans, which fights
+  `dir="auto"`'s bidi handling of a mixed Hebrew/English string for no benefit
+  the spec asks for. A task with no colored tag renders in the default row
+  style, and that default now lives in ONE place — index.html's `.task-item`
+  rule — because render.js CLEARS the inline properties rather than writing a
+  hardcoded fallback pair. **`task.colors` is not read anywhere anymore**, and
+  `addTask` no longer writes it. Documents created before this step keep the
+  now-dead field: this repo has no migration tooling, `isValidTask()` never
+  mentions `colors`, nothing reads it, and a whole-document `saveTask` on such
+  a task faithfully rewrites it. Deliberately not migrated, not overlooked.
+- **step 14 (D4, the screen)** — the Tag Settings page is a **fourth
+  `currentView` panel** (`views.settings`/`renderSettingsView`, app.js),
+  following step 9's Trash and step 13's Overdue precedent exactly — not a
+  modal, not a fourth navigation pattern. Its rows are NOT task rows: keyed by
+  `data-tag-name` instead of `data-task-id`, with their own
+  `settingsEntriesByTagName` Map, and deliberately NOT added to render.js's
+  `CONTEXT_MAPS` (those three are row-shaped, task-addressed, edit-capable
+  containers; a settings row has no checkbox, no title/note/due editor, no drag
+  handle and no depth). Consequence, handled: two delegated listeners on
+  `#task-section` had to grow settings branches BEFORE the code that requires a
+  `data-task-id`, and `contextmenu`/`pointerdown` were tightened from
+  `closest("li")` to `closest("li")?.dataset.taskId` so a settings row can't
+  swallow a right-click into a task menu that then refuses to open.
+- **step 14 (D5, which tags are listed)** — the union of (a) every tag on a
+  non-deleted task and (b) every tag already present in the settings map
+  (`collectTagNames`, tagColors.js). (b) is not redundant: without it, deleting
+  the last task carrying a tag would silently orphan that tag's configured
+  color — the entry would live on in the document forever with no way left to
+  see or clear it. Deleted tasks are excluded from (a) deliberately (a tag
+  surviving only on a trashed task isn't part of the live vocabulary), and if
+  such a tag has colors, (b) lists it anyway. A malformed entry keeps its key
+  through normalization for the same reason: dropping it would hide the very
+  row the user needs in order to fix it.
+- **step 14 (D6, not really a decision)** — no change to `firestore.rules` or
+  `firestore.indexes.json`. `isValidSettings()` (firestore.rules:61-65, read in
+  full rather than assumed) accepts any `tags` map with <= 500 keys and does not
+  constrain entry shape at all, and the `users/{userId}/meta/{docId}` match
+  block has existed since before step 1 — step 14 is simply the first client
+  code to use it. `weekStart` is deliberately never written: that field is step
+  20's, and writing a default for it now would pick the user's week-start
+  setting for them before the UI that owns it exists.
+- **step 14 (D7, no quadrant groundwork)** — only `fg`/`bg` are written. Step
+  15 owns quadrant mapping entirely; no partial scaffolding is laid here. What
+  IS done is making the entry EXTENSIBLE and proving it: `normalizeTagSettings`
+  copies unrecognized keys through verbatim at both levels, and
+  `handleTagColorChange` spreads the existing entry before writing colors —
+  verified live (14i) that a `quadrant` key survives a color change, and that
+  "Clear colors" removes only `fg`/`bg` and leaves the rest of the entry
+  standing.
+- **step 14 (D8) — two different resolution rules on one settings page, and
+  they must not be conflated.** COLOR = *last-typed-colored-tag wins* (string
+  position decides). QUADRANT (step 15) = *urgency and importance each
+  independently take the HIGHEST value any of the task's tags claims,
+  escalating never averaging, across ALL tags* (string position is irrelevant).
+  They read the same entry object off the same screen and are computed
+  completely differently. A comment saying so sits directly on `resolveTagColor`
+  in tagColors.js, where step 15 will be standing when it's tempted to
+  parameterize one function to do both. Do not.
+- **step 14 (D9, the write path)** — the settings document is written
+  whole-document via `setDoc` (`saveSettings`), routed through
+  `enqueueMutation`, with the current map re-read from the store INSIDE the
+  queued mutation and the same `finally { await refreshTasks(); }` resync every
+  other mutation in app.js uses. Never `updateDoc` — step 1's conflict rule
+  applies to settings for the identical reason it applies to tasks. Both
+  settings mutations (assign a color, clear a tag's colors) funnel through one
+  `updateTagSettings(mutate, failureMessage)` helper, so there is exactly one
+  place that builds the payload. `store.js` owns the cache (`getTagSettings`/
+  `setTagSettings`), refreshed alongside tasks in the SAME `refreshTasks` pass
+  (issued via `Promise.all` since neither read depends on the other — per-tag
+  colors are read on every render, so a cache refreshed on any other schedule
+  would leave rows painted from a stale map), and cleared by `invalidate()` on
+  sign-out so a signed-out session cannot repaint the next user's rows from the
+  previous user's colors.
+- **step 14 (D10, read normalization)** — a settings document that does not
+  exist yet, has no `tags` field, has a `tags` value that isn't a map, or holds
+  a malformed entry all degrade to "no colors" without throwing
+  (`normalizeTagSettings` + `readTagColors`, tagColors.js). A missing document
+  is the NORMAL case for every existing user of this app, not an error — the
+  first color assigned is what creates it. Colors are validated as two
+  `#rrggbb` strings: a 3-digit shorthand, a named CSS color, a number, or a
+  half-written entry all read as "no colors" rather than being passed through
+  to `li.style`, where they would paint nothing and look like a resolver bug
+  instead of bad data. Validation is split deliberately across two functions —
+  `normalizeTagSettings` decides the document's SHAPE (and keeps every key, per
+  D5), `readTagColors` decides per-entry whether it actually colors anything.
+- **step 14 (D11, mine — `parseTags` moved out of app.js)** — into
+  `tagColors.js`, alongside the color resolver that needs the identical rule.
+  Step 2's decision is that exactly one place decides what counts as a tag; a
+  second regex in the resolver would have been a second answer to that
+  question, and the resolver could not import from app.js without a cycle
+  (app.js imports render.js, which needs the resolver). Same function, same
+  regex, new home — app.js now imports it. This also puts the module on the
+  same footing as `taskTree.js`: pure logic, no DOM, no Firestore, every
+  function exported so a browser harness can drive it directly, which is the
+  only form verification takes in a project with no test runner.
+- **step 14 (D12, mine — a color is resolved from the TITLE, not from
+  `task.tags`)** — `resolveTagColor` re-parses the title on every render rather
+  than reading the stored `tags` array, even though that array is written from
+  the same `parseTags` call and is already in string order. Reason: `tags` is a
+  cached denormalization of the title (exactly like `ancestors` is of
+  `parentId`), and taskTree.js's own header already establishes the rule that
+  the cache is never the source of truth — the steps-11–12 review round had to
+  fix two places that read cached `ancestors` for precisely this reason. The
+  title is what the user typed and what the spec's rule is phrased in terms of;
+  re-parsing it costs one regex pass per row and cannot go stale.
+- **step 14 (D13, mine — a settings entry with no keys is kept, not deleted)** —
+  "Clear colors" deletes only `fg`/`bg` and leaves `{}` behind rather than
+  removing the tag from the map. Two reasons: the entry may already carry a
+  step-15 quadrant, and "clear colors" is not "clear everything about this
+  tag"; and per D5 the tag must keep listing on the settings screen even if no
+  live task carries it anymore. The cost is that an empty entry accumulates
+  against `isValidSettings()`'s 500-key cap — acceptable, since tag creation is
+  a human typing act and step 17 (tag rename/delete) is the step that owns
+  removing a tag outright.
 
 ## Open items (not steps)
 

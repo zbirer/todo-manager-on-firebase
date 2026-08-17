@@ -272,23 +272,29 @@ function renderMainView() {
   const visibleIdsFor = (tasks) =>
     new Set(tasks.filter((task) => showCompleted || !task.completed).map((task) => task.id));
 
-  // Step 12 (D2/D3/D5/D8): Focus is a flat, hand-picked set of pinned tasks —
-  // never a subtree, never a second `renderTasks` call (render.js's own
-  // containers-doc comment explains why) — ordered with the exact same
-  // sibling comparator the main list already uses (render.js's sortTasks,
-  // itself just a thin wrapper on compareSiblings, the seam step 16
-  // replaces), so Focus "mirrors list order" for free and inherits step 16's
-  // quadrant-first ordering the moment it lands, with no second ordering rule
-  // to keep in sync. Cross-parent order is arbitrary-but-stable until then
-  // (see this step's Decisions entry in PROGRESS.md). `!task.completed` here
-  // is defensive, not the actual mechanism that hides a finished task — D5
-  // unconditionally clears `pinned` the instant a task completes (directly OR
-  // via a step-6 cascade), so a completed+pinned task should never exist in
-  // the store to begin with; this filter just means a stale/hand-edited doc
-  // can't leak a finished task into Focus even if that invariant is ever
-  // violated some other way. `showCompleted` deliberately does NOT gate this
-  // filter the way it gates the main list/Inbox — a task's pinned flag being
-  // false is what removes it from Focus, unconditionally, not a toggle.
+  // Step 12 (D2/D5/D8), ordering per issue 1's fix (SUPERSEDES step 12's D3
+  // — see that superseding Decisions entry in PROGRESS.md, not the original
+  // D3 one): Focus is a flat, hand-picked set of pinned tasks — never a
+  // subtree, never a second `renderTasks` call (render.js's own
+  // containers-doc comment explains why). `renderTasks` itself decides
+  // Focus's actual order: each pinned task's index in the depth-first RENDER
+  // POSITION `flattenTree` produces for the Inbox/main containers, not a
+  // sibling-comparator sort here — `order` is only comparable within one
+  // sibling group, so a raw `sortTasks` over a cross-parent pinned set could
+  // (and did) disagree with the main list's real order. This still inherits
+  // step 16's future comparator for free, just via a different path than
+  // originally planned: `flattenTree` runs through `compareSiblings`, so
+  // whatever step 16 makes of that comparator, Focus's render-position index
+  // picks it up automatically, with no second ordering rule to keep in sync.
+  // `!task.completed` here is defensive, not the actual mechanism that hides
+  // a finished task — D5 unconditionally clears `pinned` the instant a task
+  // completes (directly OR via a step-6 cascade), so a completed+pinned task
+  // should never exist in the store to begin with; this filter just means a
+  // stale/hand-edited doc can't leak a finished task into Focus even if that
+  // invariant is ever violated some other way. `showCompleted` deliberately
+  // does NOT gate this filter the way it gates the main list/Inbox — a
+  // task's pinned flag being false is what removes it from Focus,
+  // unconditionally, not a toggle.
   const focusTasks = nonDeletedTasks.filter((task) => task.pinned && !task.completed);
   focusSection.hidden = focusTasks.length === 0; // D8: no empty heading when nothing is pinned
 
@@ -1463,8 +1469,9 @@ async function performReparent(taskId, newParentId) {
     // inInbox exactly as it was (D9) — there's no new parent to inherit from.
     // Issue 4 fix: derived from `freshTree`/`parentId` via `ancestorChain` —
     // NOT from `newParentTask.ancestors`, the cached field. See
-    // rewriteDescendantAncestors's own comment below for the full reasoning;
-    // this is the identical fix applied to the dragged task's own write.
+    // rewriteDescendantAncestors's own comment in taskTree.js for the full
+    // reasoning; this is the identical fix applied to the dragged task's own
+    // write.
     const newAncestors = newParentTask ? [...ancestorChain(freshTree, newParentTask.id), newParentTask.id] : [];
     const newInInbox = newParentTask ? newParentTask.inInbox : currentTask.inInbox;
 

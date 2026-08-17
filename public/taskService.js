@@ -147,6 +147,15 @@ function normalizeTask(task) {
     // side effect of an ancestor's completion. Step 7 (un-complete memory)
     // reverses exactly one cascade by matching this id.
     closedByCascadeFrom: task.closedByCascadeFrom ?? null,
+    // Step 8 (cascade delete) locks this shape, exactly symmetric to
+    // `closedByCascadeFrom` above: the id of the task the USER clicked
+    // Delete on (never a descendant's immediate parent), stamped on every
+    // live descendant the cascade soft-deleted — null on the clicked task
+    // itself (the user's explicit act is never a cascade effect) and on any
+    // task deleted on its own outside a cascade. Nothing reads it yet; step 9
+    // (Trash) is what restores the exact subtree that went down together by
+    // matching this id.
+    deletedByCascadeFrom: task.deletedByCascadeFrom ?? null,
   };
 }
 
@@ -188,10 +197,18 @@ export const saveTask = async (userId, task) => {
 // 4. Soft-delete: mark the task rather than remove the document. No trash UI
 // reads `deleted`/`deletedAt` yet, but writing them now means a later trash
 // feature doesn't need a migration over tasks deleted before it shipped.
-export const softDeleteTask = async (userId, task) => {
+//
+// `deletedByCascadeFrom` defaults to null (a task deleted on its own, or the
+// task the user actually clicked in a cascade); app.js's cascade-delete path
+// (step 8) passes the clicked task's id for every descendant it sweeps up in
+// the same act. This stays the one and only write path for a soft delete —
+// cascade delete calls this once per document, it never introduces a second
+// route to `deleted: true`.
+export const softDeleteTask = async (userId, task, deletedByCascadeFrom = null) => {
   return saveTask(userId, {
     ...task,
     deleted: true,
     deletedAt: serverTimestamp(),
+    deletedByCascadeFrom,
   });
 };

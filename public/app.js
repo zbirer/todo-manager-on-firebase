@@ -78,6 +78,83 @@ const taskInput = document.getElementById("task-input");
 const taskList = document.getElementById("task-list");
 const inboxList = document.getElementById("inbox-list");
 const showCompletedToggle = document.getElementById("show-completed-toggle");
+const taskMenu = document.getElementById("task-menu");
+const taskMenuMoveOutItem = taskMenu.querySelector('[data-action="move-out"]');
+
+// 1b. Task context menu (step 8) — right-click or long-press on a row.
+// `taskMenu` is one shared element (declared in index.html, outside both
+// <ul>s) that app.js moves and re-labels per open, rather than one menu
+// built per row; render.js never touches it, so a refresh mid-open can't
+// tear it down out from under the user (see the .task-menu CSS comment).
+//
+// Closing is idempotent the same way step 2's edits are (see `closeEdit`
+// above): `menuOpen` is the single guard, checked and cleared together, so
+// two close paths landing back to back (Escape immediately followed by the
+// outside-click listener's own handling of that same Escape-triggered blur,
+// or a scroll firing while an outside click is still being processed) can
+// never decrement the interaction guard twice for the same open. That bug —
+// a double decrement releasing a DIFFERENT, still-open interaction's
+// deferred refresh — has already happened once in this repo (see openEdits'
+// history above); this menu only ever holds one interaction at a time, but
+// the guard is built the same defensive way regardless.
+let menuOpen = false;
+
+// Set true for exactly one tick after a long-press opens the menu (and,
+// harmlessly, after a right-click too). On touch devices a "ghost" click
+// event fires after the pointerup that ended a long press, even though the
+// user's intent was to open the menu, not to click through to whatever is
+// under their finger. Left unsuppressed, that ghost click would both (a)
+// start a title edit via the delegated click listener below, and (b) look
+// like an "outside click" to the menu's own close listener and immediately
+// close the menu that same click just opened. A `setTimeout(…, 0)` clears
+// this after the current synchronous event dispatch finishes, so every
+// listener that runs on that one click (bubbling through taskSection and up
+// to document) sees it as true, and it's back to false for the next real
+// click regardless of whether a ghost click actually materializes.
+let suppressNextClick = false;
+function armClickSuppression() {
+  suppressNextClick = true;
+  setTimeout(() => {
+    suppressNextClick = false;
+  }, 0);
+}
+
+function closeTaskMenu() {
+  if (!menuOpen) return; // already closed via the other path
+  menuOpen = false;
+  taskMenu.hidden = true;
+  delete taskMenu.dataset.taskId;
+  endInteraction();
+}
+
+// Opens (or re-targets) the menu at viewport coordinates `x, y`, clamped so
+// it never renders partly off-screen. Closes any menu already open first —
+// idempotent-safe and it means there is only ever one open interaction to
+// account for, never two stacked from a stray second open.
+function openTaskMenuForTask(taskId, x, y) {
+  const task = getTasks().find((t) => t.id === taskId);
+  if (!task || task.deleted) return;
+
+  closeTaskMenu();
+
+  // Only an Inbox row has anything to file out of the Inbox — same rule
+  // updateTaskElement (render.js) uses for the inline per-row button.
+  taskMenuMoveOutItem.style.display = task.inInbox ? "" : "none";
+  taskMenu.dataset.taskId = taskId;
+  taskMenu.hidden = false;
+
+  // Measured AFTER un-hiding — a `hidden` element has no box to measure.
+  // `position: fixed` (index.html) means these coordinates are already
+  // viewport-relative, matching event.clientX/clientY directly.
+  const rect = taskMenu.getBoundingClientRect();
+  const maxLeft = Math.max(0, window.innerWidth - rect.width);
+  const maxTop = Math.max(0, window.innerHeight - rect.height);
+  taskMenu.style.left = `${Math.min(Math.max(0, x), maxLeft)}px`;
+  taskMenu.style.top = `${Math.min(Math.max(0, y), maxTop)}px`;
+
+  menuOpen = true;
+  beginInteraction(); // holds off the 5-minute refresh while the menu is open
+}
 
 // 2. View dispatch table. Only `main` exists in step 1 — this is the
 // scaffold later steps (trash, settings) register into, not a router yet.
@@ -122,6 +199,17 @@ async function refreshTasks() {
     const tasks = await fetchTasks(userId);
     setTasks(tasks);
     views.main();
+    // Step 8: an open menu belongs to one specific task. If that task is no
+    // longer live in the freshly-fetched set — deleted from elsewhere, or by
+    // this very refresh's own cascade — the menu it was opened for no longer
+    // means anything, so close it rather than leave it pointing at a row
+    // that has vanished (or worse, been silently reassigned if this id is
+    // ever reused, which Firestore auto-ids never do, but the check is cheap
+    // either way).
+    if (menuOpen) {
+      const menuTask = tasks.find((t) => t.id === taskMenu.dataset.taskId);
+      if (!menuTask || menuTask.deleted) closeTaskMenu();
+    }
   } catch (error) {
     console.error("Failed to refresh tasks:", error);
   }
@@ -182,12 +270,19 @@ taskForm.addEventListener("submit", (event) => {
 // different cascade), not by this one, and restamping it would make step 7
 // reopen something this cascade never actually closed.
 //
-// Un-completing (nextCompleted === false) does NOT reopen cascaded
-// descendants — that reversal is step 7's "un-complete memory", not this
-// step's job. It does reset the clicked task's OWN `closedByCascadeFrom` to
-// null: a task that isn't completed can't still be "closed by" anything, so
-// leaving a stale stamp there would misrepresent an open task as
-// cascade-closed once step 7 goes looking for exactly that stamp.
+// Un-completing (nextCompleted === false) is step 7's "un-complete memory":
+// it reopens every non-deleted task whose `closedByCascadeFrom` equals the
+// CLICKED task's id — a single global filter over the whole task set, not a
+// subtree walk. The stamp itself is what recorded cascade membership at
+// closing time, so matching it back is the only source of truth this needs;
+// re-deriving via descendantIds would be a second, redundant source of truth
+// that would actively disagree with the stamp once step 11 (drag-to-reparent)
+// can move a task out of the subtree it was originally closed under — the
+// stamp travels with the task, a tree walk from the current parent would not.
+// It also resets the clicked task's OWN `closedByCascadeFrom` to null: a task
+// that isn't completed can't still be "closed by" anything, so leaving a
+// stale stamp there would misrepresent an open task as cascade-closed the
+// next time this same filter goes looking for it.
 taskSection.addEventListener("change", (event) => {
   const checkbox = event.target.closest(".task-item__checkbox");
   if (!checkbox) return;
@@ -202,12 +297,29 @@ taskSection.addEventListener("change", (event) => {
 
     if (!nextCompleted) {
       try {
+        // The clicked task first, so the row the user actually pressed
+        // reflects their action even if the reopen below fails partway.
         await saveTask(userId, { ...task, completed: false, closedByCascadeFrom: null });
-        await refreshTasks();
+
+        // Snapshotted once before the loop, same reasoning as the completing
+        // branch below: the mutation queue serializes against every other
+        // enqueued mutation, so nothing else can change these tasks mid-loop.
+        // Global filter, not a subtree walk — see the comment block above
+        // this listener for why.
+        const toReopen = getTasks().filter(
+          (t) => !t.deleted && t.closedByCascadeFrom === taskId
+        );
+        for (const current of toReopen) {
+          await saveTask(userId, { ...current, completed: false, closedByCascadeFrom: null });
+        }
       } catch (error) {
-        console.error("Failed to update task:", error);
-        alert("Could not update task.");
-        checkbox.checked = true; // revert the toggle on failure
+        console.error("Failed to reopen task:", error);
+        alert("Could not reopen the whole cascade. The list has been refreshed to show what actually saved.");
+      } finally {
+        // Always resync with Firestore's real state, same as the completing
+        // branch — the checkbox's own checked state comes back from this
+        // refresh, so there's nothing to manually revert here on failure.
+        await refreshTasks();
       }
       return;
     }
@@ -257,6 +369,11 @@ taskSection.addEventListener("change", (event) => {
 // closed exactly once — see openEdits above) so the 5-minute refresh can't
 // clobber the edit box that is about to appear.
 taskSection.addEventListener("click", async (event) => {
+  // The ghost click that follows a long-press (see armClickSuppression
+  // above) must not also open a title/note edit on the row the menu just
+  // opened for.
+  if (suppressNextClick) return;
+
   // A link inside a note (built by render.js's linkifier) should behave like
   // a link — opening it must not also drop the note into edit mode.
   if (event.target.closest("a")) return;
@@ -288,68 +405,98 @@ taskSection.addEventListener("click", async (event) => {
   }
 });
 
-// Step 3: soft-delete a leaf task. Cascade delete (a task with children) is
-// step 8 — refused here rather than silently doing nothing, since deleting
-// only the parent would orphan its children, which the spec never allows.
-// `buildTree` (taskTree.js) is the single source of truth for parent/child
-// links, so we ask it rather than re-deriving "does anything have this
-// parentId" by scanning `tasks[]` here. The confirm-gated checks below run
-// against the state at click time (for fast, honest feedback before even
-// asking to confirm); the actual write re-reads and re-checks both inside
-// the queued mutation, since an earlier queued mutation could have changed
-// this very task (or given it a child) between the click and its turn.
+// Step 8: cascade-delete a task and its whole live subtree, replacing step
+// 3's leaf-only refusal — the spec never allows orphaning children, so a
+// parent with sub-tasks is no longer refused, it takes them with it
+// (product-spec.md §3: "Deleting a parent deletes its entire sub-tree").
+// Every descendant this cascade actually deletes is stamped
+// `deletedByCascadeFrom` with the id of the task the USER clicked — never a
+// descendant's own immediate parent, the same convention step 6 established
+// for `closedByCascadeFrom` — so step 9 (Trash) can restore the exact
+// subtree that went down together. The clicked task itself always writes
+// `deletedByCascadeFrom: null`: the user's explicit act is never a cascade
+// effect.
+//
+// An already-deleted descendant is left completely untouched (not restamped,
+// not given a new `deletedAt`) — it went down in some earlier, unrelated act.
+// But the cascade does not stop there: a still-live child underneath an
+// already-deleted node must still be reached and deleted. That's why the
+// tree below is built from EVERY task, deleted or not — a deleted node still
+// has to act as a pass-through connector to its live descendants in the
+// parent/child walk, or `buildTree` would treat that live child as an
+// orphaned root (no parent found in the tree) and it would escape the
+// cascade entirely.
+//
+// `buildTree`/`descendantIds` (taskTree.js) stay the single source of truth
+// for parent/child links, same as every other step. The confirm-gated checks
+// below run against state at click time, for fast honest feedback before
+// even asking to confirm; the actual writes re-derive the subtree fresh
+// inside the queued mutation, since an earlier queued mutation could have
+// changed this very subtree between the click and its turn. Each deletion is
+// its own document write via `softDeleteTask` — never a merged/batched
+// write — because step 9 counts every deleted document as its own trash
+// slot.
 async function handleDeleteClick(taskId) {
   const userId = getCurrentUserId();
   const task = getTasks().find((t) => t.id === taskId);
-  if (!userId || !task) return;
+  if (!userId || !task || task.deleted) return;
 
-  // Built over non-deleted tasks only: an already-trashed child shouldn't
-  // count against its former parent's leaf-ness (step 4 is what makes this
-  // check meaningful for the first time — until now nothing had children).
-  const tree = buildTree(getTasks().filter((t) => !t.deleted));
-  const node = tree.byId.get(taskId);
-  if (node && node.children.length > 0) {
-    alert(
-      "This task has sub-tasks. Deleting a task with sub-tasks isn't supported yet — that lands in a later step."
-    );
-    return;
-  }
+  const tree = buildTree(getTasks()); // full set — deleted nodes still connect their live children
+  const liveDescendantCount = descendantIds(tree, taskId).filter(
+    (id) => !tree.byId.get(id).deleted
+  ).length;
 
-  if (!confirm(`Delete "${task.title}"?`)) return;
+  const confirmMessage =
+    liveDescendantCount === 0
+      ? `Delete "${task.title}"?`
+      : `Delete "${task.title}" and its ${liveDescendantCount} sub-task${liveDescendantCount === 1 ? "" : "s"}?`;
+  if (!confirm(confirmMessage)) return;
 
   await enqueueMutation(async () => {
     const currentUserId = getCurrentUserId();
     const currentTask = getTasks().find((t) => t.id === taskId);
     if (!currentUserId || !currentTask || currentTask.deleted) return; // already gone — nothing to do
 
-    const freshTree = buildTree(getTasks().filter((t) => !t.deleted));
-    const freshNode = freshTree.byId.get(taskId);
-    if (freshNode && freshNode.children.length > 0) {
-      alert("This task now has sub-tasks and can't be deleted this way anymore.");
-      return;
-    }
+    // Re-derive fresh, from the FULL task set (not just non-deleted) — see
+    // the file-level reasoning above for why a deleted node must still be
+    // walked through to reach its live children.
+    const freshTree = buildTree(getTasks());
+    const idsToDelete = [taskId, ...descendantIds(freshTree, taskId)];
+    const currentById = new Map(getTasks().map((t) => [t.id, t]));
 
     try {
-      // softDeleteTask (taskService.js) writes deleted:true + deletedAt via
-      // the same whole-document saveTask path as every other mutation — never
-      // a Firestore deleteDoc, so a later step can restore it from Trash.
-      await softDeleteTask(currentUserId, currentTask);
-      await refreshTasks();
+      // The clicked task first, so the row the user actually pressed
+      // reflects their action even if the cascade below fails partway.
+      await softDeleteTask(currentUserId, currentTask, null);
+
+      for (const id of idsToDelete.slice(1)) {
+        const current = currentById.get(id);
+        // Already deleted: leave it completely untouched. Its own live
+        // children are still in `idsToDelete` regardless — `freshTree` was
+        // built from every task, so the walk already passed through this
+        // node to find them — this `continue` only skips RE-writing the
+        // already-deleted node itself, it does not stop the cascade.
+        if (!current || current.deleted) continue;
+        await softDeleteTask(currentUserId, current, taskId);
+      }
     } catch (error) {
       console.error("Failed to delete task:", error);
-      alert("Could not delete task.");
+      alert("Could not delete the whole cascade. The list has been refreshed to show what actually saved.");
+    } finally {
+      await refreshTasks();
     }
   });
 }
 
 // Step 4: add a subtask under `parentId`, up to the spec's 7-level limit.
-// There's no per-task menu until step 8, so this is a plain per-row button
-// (consistent with step 3's Delete) plus a prompt() for the title — the
-// simplest thing that lets the title still go through the same tag-parsing
-// and length rules as every other title. Same re-check-inside-the-queue
-// pattern as delete: the depth/parent checks below are for fast feedback
-// before prompting; the queued mutation re-derives everything it needs from
-// a fresh read so it never acts on a stale parent.
+// A plain per-row button plus a prompt() for the title — the simplest thing
+// that lets the title still go through the same tag-parsing and length
+// rules as every other title. Step 8's context menu also reaches this same
+// function; this inline button is not superseded by it, they're two entry
+// points into the same handler. Same re-check-inside-the-queue pattern as
+// delete: the depth/parent checks below are for fast feedback before
+// prompting; the queued mutation re-derives everything it needs from a
+// fresh read so it never acts on a stale parent.
 //
 // Step 5 correction: the new subtask's `inInbox` is inherited from its
 // parent, not hardcoded false. Step 4 reasoned "a task filed under an
@@ -580,6 +727,150 @@ taskSection.addEventListener("focusout", async (event) => {
   }
 });
 
+// 5e. Context menu wiring (step 8) — opens on right-click and on long-press,
+// closes on choosing an item, Escape, an outside click, scroll, or sign-out.
+// Every item routes to the exact same handler function the matching inline
+// per-row button already calls (handleAddSubtaskClick / handleMoveOutOfInboxClick
+// / handleDeleteClick above) — there is no parallel menu-only implementation
+// of any of these actions.
+
+// Right-click: the browser's own contextmenu event already carries the
+// pointer position and which element was targeted — no gesture tracking
+// needed the way long-press requires below.
+taskSection.addEventListener("contextmenu", (event) => {
+  const li = event.target.closest("li");
+  if (!li) return;
+  event.preventDefault(); // suppress the native OS/browser context menu
+  openTaskMenuForTask(li.dataset.taskId, event.clientX, event.clientY);
+});
+
+// Long-press: a ~500ms pointerdown-and-hold on a row. Cancelled by lifting
+// early (pointerup), the gesture being taken over by something else
+// (pointercancel), the pointer leaving the section entirely (pointerleave),
+// or moving past a small threshold — a real long-press holds roughly still;
+// past ~10px this is a drag/scroll starting, not a long-press, and step 11
+// is what a "moved too far" gesture is actually for.
+let longPressTimer = null;
+let longPressStart = null; // { x, y, taskId }
+// Set true the instant the long-press timer opens the menu; consumed by the
+// very next pointerup. It is NOT enough to arm the click suppression at open
+// time (armClickSuppression's own setTimeout(0) clears it on the next
+// macrotask, i.e. within a few milliseconds of t=500ms) — the ghost click
+// that follows a long press fires after the user actually LIFTS their
+// finger, which is whenever their hold happens to end, not at t=500ms. A
+// realistic hold (say 650ms) leaves the suppression window closed long
+// before the ghost click ever arrives, so nothing gets suppressed. Arming it
+// in the pointerup handler instead starts that window at the true
+// predecessor of the ghost click in the dispatch sequence, whatever the
+// actual hold duration was.
+let longPressOpenedMenu = false;
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_MOVE_THRESHOLD_PX = 10;
+
+function cancelLongPress() {
+  if (longPressTimer !== null) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+  longPressStart = null;
+}
+
+taskSection.addEventListener("pointerdown", (event) => {
+  // button 0 is the primary button (left mouse, or any touch/pen contact).
+  // A right-click's own pointerdown reports button 2 and is already handled
+  // by the contextmenu listener above — starting a long-press timer for it
+  // too would just race the two gestures against the same row.
+  if (event.button !== 0) return;
+  const li = event.target.closest("li");
+  if (!li) return;
+
+  const taskId = li.dataset.taskId;
+  longPressStart = { x: event.clientX, y: event.clientY };
+  longPressTimer = setTimeout(() => {
+    longPressTimer = null;
+    longPressOpenedMenu = true; // consumed by pointerup below, not suppressed here
+    openTaskMenuForTask(taskId, longPressStart.x, longPressStart.y);
+    longPressStart = null;
+  }, LONG_PRESS_MS);
+});
+
+// The ghost click that follows a long press comes right after THIS event,
+// however long the hold actually was — so this is where suppression has to
+// be armed, not back when the timer fired. Only consumed once: a plain short
+// click's pointerup never set the flag, so it falls straight through to
+// `cancelLongPress()` with nothing suppressed, exactly as before.
+taskSection.addEventListener("pointerup", () => {
+  if (longPressOpenedMenu) {
+    longPressOpenedMenu = false;
+    armClickSuppression();
+  }
+  cancelLongPress();
+});
+// A cancelled or abandoned gesture must not leave a stale flag around to
+// wrongly suppress some later, unrelated click — pointerup is not guaranteed
+// to be the event that follows once the pointer has left the section or the
+// gesture was taken over by something else.
+taskSection.addEventListener("pointercancel", () => {
+  longPressOpenedMenu = false;
+  cancelLongPress();
+});
+taskSection.addEventListener("pointerleave", () => {
+  longPressOpenedMenu = false;
+  cancelLongPress();
+});
+taskSection.addEventListener("pointermove", (event) => {
+  if (!longPressStart) return;
+  const dx = event.clientX - longPressStart.x;
+  const dy = event.clientY - longPressStart.y;
+  if (Math.sqrt(dx * dx + dy * dy) > LONG_PRESS_MOVE_THRESHOLD_PX) cancelLongPress();
+});
+
+// Choosing a menu item: close first (idempotent — see closeTaskMenu), then
+// dispatch to the same handler the inline button uses. `taskMenu.dataset`
+// is read before closeTaskMenu clears it.
+taskMenu.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-action]");
+  if (!button) return;
+  const taskId = taskMenu.dataset.taskId;
+  const action = button.dataset.action;
+  closeTaskMenu();
+  if (!taskId) return;
+
+  if (action === "add-subtask") await handleAddSubtaskClick(taskId);
+  else if (action === "move-out") await handleMoveOutOfInboxClick(taskId);
+  else if (action === "delete") await handleDeleteClick(taskId);
+});
+
+// Escape closes the menu from anywhere in the document, not just while an
+// edit input has focus (the menu itself holds no focus — its buttons are
+// clicked, not tabbed through, in the primary flows this step verifies).
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && menuOpen) closeTaskMenu();
+});
+
+// A click anywhere outside the menu closes it. Checked against
+// suppressNextClick first so the ghost click that follows the long-press
+// which just opened this same menu doesn't immediately close it again (see
+// armClickSuppression above) — that click's target is the row underneath
+// the menu, which is "outside" the menu element and would otherwise match
+// here on the very same gesture that opened it.
+document.addEventListener("click", (event) => {
+  if (suppressNextClick) return;
+  if (!menuOpen) return;
+  if (event.target.closest("#task-menu")) return; // handled by the menu's own click listener above
+  closeTaskMenu();
+});
+
+// Scroll doesn't bubble like click does, so this has to be registered in the
+// capture phase to see a scroll on any scrollable ancestor, not just window.
+window.addEventListener(
+  "scroll",
+  () => {
+    if (menuOpen) closeTaskMenu();
+  },
+  true
+);
+
 // 6. "Show completed" is a local filter over already-fetched data, not a
 // mutation, so it just re-renders rather than going through refreshTasks().
 showCompletedToggle.addEventListener("change", () => {
@@ -604,6 +895,7 @@ monitorAuthState(async (uid) => {
   } else {
     stopAutoRefresh();
     invalidate();
+    closeTaskMenu(); // a menu open for one account's task means nothing once signed out
     statusText.textContent = "Please sign in to access your task manager.";
     loginBtn.style.display = "inline-block";
     logoutBtn.style.display = "none";

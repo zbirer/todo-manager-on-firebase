@@ -1,8 +1,8 @@
 # Progress
 
-Last updated: 2026-08-17 — **Steps 1–6 implemented and committed.** Step 7
-(un-complete memory) is next. No signed-in browser walkthrough has been reported back
-for any step yet — the click-path below is still the first thing to run.
+Last updated: 2026-08-17 — **Steps 1–8 implemented.** Step 9 (Trash) is next. No
+signed-in browser walkthrough has been reported back for any step yet — the
+click-path below is still the first thing to run.
 
 ## Step table
 
@@ -14,9 +14,9 @@ for any step yet — the click-path below is still the first thing to run.
 | 4 | Hierarchy | done |
 | 5 | Inbox container | done |
 | 6 | Cascade complete | done |
-| 7 | Un-complete memory | next |
-| 8 | Context menu + cascade delete | planned |
-| 9 | Trash | planned |
+| 7 | Un-complete memory | done |
+| 8 | Context menu + cascade delete | done |
+| 9 | Trash | next |
 | 10 | Manual reorder | planned |
 | 11 | Drag-to-reparent | planned |
 | 12 | Focus / pin | planned |
@@ -30,17 +30,40 @@ for any step yet — the click-path below is still the first thing to run.
 | 20 | Search — advanced | planned |
 | 21 | Export / import | planned |
 
-## Resume here — step 7 (un-complete memory)
+## Resume here — step 9 (Trash)
 
-**Exact next action:** implement step 7. Un-completing a parent must reopen *only*
-what that parent's cascade closed — i.e. every task whose `closedByCascadeFrom`
-equals that parent's id — and must leave a task that was completed independently
-still completed. Step 6 already stamps exactly what step 7 needs; the reopen set is
-a single `=== parentId` filter over the subtree, at any nesting depth.
+**Exact next action:** implement step 9, the Trash screen. What steps 3 and 8 have
+already left in place for it:
 
-Note that step 6's un-complete path currently only resets the clicked task's own
-`closedByCascadeFrom` to `null` and deliberately does no reopening — that is the
-hook step 7 replaces.
+- **`deletedByCascadeFrom: string | null`** (taskService.js's `normalizeTask`,
+  step 8) — exactly symmetric to `closedByCascadeFrom`. Holds the id of the task
+  the user actually clicked Delete on, stamped on every live descendant a cascade
+  delete swept up with it; `null` on the clicked task itself and on anything
+  deleted on its own. Restoring a parent from Trash means restoring it AND every
+  task whose `deletedByCascadeFrom` equals its id — the same global-filter pattern
+  step 7 uses for reopening, not a tree walk (see the Decisions entry below for
+  why a tree walk would be wrong here too, for the same drag-to-reparent reason).
+- **Every deleted document is its own write, individually stamped `deleted: true`
+  + `deletedAt`.** Step 8's cascade delete never merges or batches these — each
+  descendant is a separate `softDeleteTask` call — specifically so step 9 can
+  count "one deleted document = one trash slot" without having to first explode
+  a merged cascade record back into individual entries.
+- **The 50-item cap is a count, not a time limit** (product-spec.md §3), and
+  **eviction is permanent** — the oldest deleted document past the 50th falls out
+  of Trash and is gone for good, no soft-un-delete of an evicted item. Sort
+  candidates for eviction by `deletedAt` ascending among all `deleted: true`
+  documents (root deletions and cascade-swept descendants count individually,
+  per the point above). There is no code for this yet — fetchTasks currently
+  fetches everything unconditionally, so a Trash view can filter client-side to
+  start, but the 50-cap eviction itself still needs to be implemented and will be
+  the trickiest part: it has to run somewhere (on delete? on trash view load?)
+  and actually issue hard `deleteDoc` calls past the 50th, which is new — nothing
+  in this codebase has called `deleteDoc` yet.
+- **Restoring a subtree needs `parentId`/`ancestors` re-validated at restore
+  time**, not blindly re-applied — the original parent may itself now be deleted,
+  moved, or gone, and step 11 (drag-to-reparent, not yet built) will make "the
+  ancestry that was true at delete time" even less reliable to just replay
+  unchecked.
 
 **No step has been confirmed in a signed-in browser yet.** Everything below marked
 "verified" was verified unsigned-in, by driving the real modules with synthetic
@@ -68,9 +91,16 @@ a bogus `does not provide an export named ...` error and cost real time once alr
    the row closes (it must NOT trap you in a repeating alert).
 6. "+ Subtask" on a task → the child renders indented under it. Nest to 7 levels →
    the 8th is refused with a readable message, not a permission error.
-7. Delete a task that has children → refused. Delete a childless one → confirm dialog
-   names it, then it disappears.
-8. Reload the page → every change above survived.
+7. Cascade-complete a parent with a few levels of children (ticking it closes the
+   whole subtree), then untick it → every descendant the cascade actually closed
+   reopens, at any depth. A descendant you had completed by hand *before* ticking
+   the parent stays completed after unticking it.
+8. Right-click a task row (or long-press on a touch device) → a menu appears at
+   the pointer with Add subtask / Delete, plus Move out of Inbox only for an
+   Inbox row. Escape closes it; clicking anywhere else closes it too. Delete from
+   the menu on a task with sub-tasks → confirm names the task and the sub-task
+   count, then the whole subtree disappears together, not just the one row.
+9. Reload the page → every change above survived.
 
 **Files touched (steps 1–4):**
 - `public/taskService.js` — renamed from `todoService.js`; `addTask`, `fetchTasks`,
@@ -108,16 +138,86 @@ driving the real modules directly):**
 - `enqueueMutation` serializes strictly; a throwing mutation propagates to its caller
   without poisoning the queue; a queued mutation sees the previous one's committed
   write.
+- **Step 7 (un-complete memory), verified unsigned-in against `store.js`'s real
+  `setTasks`/`getTasks`, replicating app.js's exact reopen filter over synthetic
+  data:** A>B>C>D cascade-stamped by A, un-completing A reopens B, C, D regardless
+  of depth (a flat `closedByCascadeFrom === id` filter needs no tree walk to reach
+  any depth, since the original cascade already stamped every descendant directly
+  with the top id, not each other's immediate parent). A>B>C with B completed
+  independently before A's cascade: un-completing A reopens only C; B stays
+  completed. A task stamped by a *different* cascade's id is untouched when the
+  first task is un-completed.
+- **Step 8 (cascade delete), verified unsigned-in against `taskTree.js`'s real
+  `buildTree`/`descendantIds`, replicating `handleDeleteClick`'s exact selection
+  algorithm over synthetic data:** deleting a parent with a 3-deep live subtree
+  deletes all 4 tasks; the parent writes `deletedByCascadeFrom: null`, every
+  descendant writes it as the parent's id. With an already-deleted task sitting
+  *between* the clicked parent and two still-live descendants, the walk (built
+  from the full task set, deleted or not) still reaches and deletes the live
+  descendants below it, while the already-deleted task itself is left completely
+  unwritten — its original `deletedAt` and stamp are untouched.
+- **Step 8's context menu, driven live in the real DOM against app.js's actual
+  attached listeners (rows rendered via `render.js`'s real `renderTasks`, right-
+  click via a real browser right-click, long-press via synthetic `PointerEvent`s):**
+  right-click opens the menu at the pointer, correctly omitting "Move out of
+  Inbox" for a non-Inbox task; Escape and an outside click each close it and
+  correctly decrement `store.js`'s (now-exported, verification-only) interaction
+  depth by exactly one. The idempotent-close guard was verified directly, not
+  just reasoned about: with a sentinel `beginInteraction()` held alongside the
+  menu's own (depth 2), closing the menu via Escape dropped depth to 1 as
+  expected, and then firing a *second*, redundant close path (an outside click,
+  menu already closed) left depth at 1 — it did not fall to 0, proving the
+  second close correctly no-ops instead of releasing the sentinel's
+  still-open interaction. Re-verified after the long-press fix below, with the
+  same sentinel technique applied to a long-press-opened menu, same result. The
+  menu survived a real `renderTasks` call that genuinely reordered two sibling
+  `<li>`s in the same container (order verified to flip in the DOM) — same
+  element, same `dataset.taskId`, still open, throughout.
+- **Step 8's long-press-suppresses-the-ghost-click path — bug found and fixed
+  during review.** The first pass armed `armClickSuppression()` inside the
+  long-press timer's callback, i.e. at the moment the menu opened (t = 500ms).
+  That function's own `setTimeout(…, 0)` clears the suppression flag on the
+  very next macrotask (a few milliseconds later), but the ghost click a real
+  touch device fires only follows the user's actual finger-lift — whenever
+  that happens to be, not at t = 500ms. A realistic hold (say 650ms) left the
+  suppression window closed long before the ghost click ever arrived, so
+  nothing was actually suppressed; the first round's "verified" claim for this
+  passed only because its test dispatched the ghost click in the same tick as
+  opening the menu, which no real long-press does. **Fix:** move the
+  `armClickSuppression()` call out of the timer callback and into the
+  `pointerup` handler instead, gated by a `longPressOpenedMenu` flag set when
+  the timer fires and consumed (cleared) on the very next `pointerup` —
+  the ghost click follows pointerup directly in the same dispatch sequence
+  regardless of how long the hold was, so arming there is correct at any hold
+  duration. The flag is also cleared on `pointercancel`/`pointerleave` so an
+  abandoned gesture can never suppress a later, unrelated click. **Re-verified
+  with a realistic ~700ms hold** (well past the 500ms threshold), with
+  `pointerup` and the ghost click dispatched back-to-back with no artificial
+  gap (matching how a real touch input pipeline fires the compatibility click
+  right after pointerup, not on a human-scale delay): the menu stayed open,
+  no title edit opened, and interaction depth stayed at 1 (the menu's own).
+  Also re-confirmed unbroken: a normal short click (pointerdown just before
+  the 500ms threshold, pointerup, click) still opens a title edit exactly as
+  before; a real outside click still closes an open menu.
 
 **Assumed (written and reasoned about, never exercised signed-in):**
 - Every path that actually reaches Firestore: create, save, soft-delete, and the
-  refetch. All browser verification above ran against synthetic in-memory tasks.
+  refetch. All browser verification above ran against synthetic in-memory tasks —
+  **including steps 7 and 8**: the reopen/cascade-delete *selection logic* was
+  verified directly against the real `store.js`/`taskTree.js`, and the context
+  menu's open/close mechanics were verified against real DOM events and app.js's
+  real listeners, but no `saveTask`/`softDeleteTask` call in either step's actual
+  `enqueueMutation` body has been run against Firestore — that requires a signed-in
+  user, which is not something this session can do.
 - The 5-minute auto-refresh timer firing, and the interaction guard deferring it.
 - The 7-level cap refusing an 8th level against real stored `ancestors`.
 - `normalizeTask`'s fallbacks against the real documents already in this project's
-  Firestore.
+  Firestore, including the new `deletedByCascadeFrom` backfill.
 - That the mutation queue prevents the concrete edit-then-checkbox race end to end
   (the queue itself is verified; the race was reproduced only by code reading).
+- The Trash-scoped parts of step 8 that step 9 will actually exercise: whether
+  `deletedByCascadeFrom` round-trips correctly through a real Firestore write and
+  read (only `normalizeTask`'s in-memory backfill was verified).
 
 ## Decisions
 
@@ -243,6 +343,58 @@ driving the real modules directly):**
   window where the timer's refetch can interleave with the cascade's writes. Low
   probability, no data corruption (the refetch only reads), but it is the obvious thing
   to fix if refresh-vs-mutation ordering ever misbehaves.
+- **step 7** — the reopen set is a **global filter** over every non-deleted task
+  (`closedByCascadeFrom === clickedId`), never a subtree walk from the clicked task's
+  current position. The stamp itself is what recorded cascade membership at closing
+  time, so matching it back is the only source of truth this needs — a tree walk would
+  be a second, redundant source of truth, and it would actively disagree with the stamp
+  once step 11 (drag-to-reparent) can move a stamped task out of the subtree it was
+  originally closed under. The stamp travels with the task; a walk from the current
+  parent would not find it there anymore. **Step 9 (Trash) must use this same
+  global-filter pattern for restoring a cascade-deleted subtree via
+  `deletedByCascadeFrom`, for the identical reason.**
+- **step 7** — the clicked task's own reopen write happens **first**, before the
+  cascade loop, mirroring step 6's "clicked task first" ordering — so the row the user
+  actually pressed reflects their action even if the rest of the reopen fails partway.
+- **step 8** — `deletedByCascadeFrom` is **exactly symmetric** to `closedByCascadeFrom`:
+  the id of the task the user actually clicked Delete on (never a descendant's
+  immediate parent), stamped on every live descendant the cascade deleted, `null` on
+  the clicked task itself. It is never restamped or rewritten once set — an
+  already-deleted descendant caught by a later cascade is left completely untouched,
+  keeping whichever cascade (or solo deletion) actually put it in the trash as the one
+  true stamp step 9 reads to reconstruct "what went down together."
+- **step 8** — each deleted document is its own `softDeleteTask` write, never merged or
+  batched, **specifically so step 9 can count one deleted document as one trash slot**.
+  A parent with 11 live descendants consumes 12 of the 50 slots (product-spec.md §3),
+  which only works if each of those 12 documents was written — and is later evictable —
+  individually.
+- **step 8** — the cascade-delete subtree walk is built from **every task, deleted or
+  not** (`buildTree(getTasks())`, no `.filter(t => !t.deleted)`), unlike step 6's
+  cascade-complete walk which filters to non-deleted tasks first. This is a deliberate
+  difference, not an inconsistency: a deleted node must still act as a pass-through
+  connector to its own live children in the parent/child graph, or `buildTree` would
+  see those live children as orphaned roots (no parent found in the filtered set) and
+  the cascade would fail to reach and delete them. Completing doesn't remove a task from
+  the tree the way deleting does, which is why step 6 never needed this distinction.
+- **step 8** — the context menu is **one shared element declared in `index.html`,
+  outside both `<ul>`s**, moved and re-labeled per open rather than built per row.
+  `render.js`'s keyed re-render only ever touches elements inside `#inbox-list` and
+  `#task-list`; an element that lived inside either list could be torn down by an
+  unrelated refresh while the menu was open, exactly the failure step 2's edit boxes
+  were built to avoid. Verified live: a real `renderTasks` call that reordered two
+  sibling rows left the open menu — outside both lists — completely untouched.
+- **step 8** — the menu's close path is idempotent through a single `menuOpen` boolean
+  guard, the same pattern `openEdits` uses for edits (steps 2–4 review round). Two close
+  paths landing back to back (Escape immediately followed by the outside-click
+  listener's own pass over that same event, or Escape followed by a stray scroll) must
+  never decrement the interaction guard twice for one open. Verified directly against
+  `store.js`'s interaction depth (a verification-only export added for this — see
+  `getInteractionDepth` in store.js): with a sentinel interaction held alongside the
+  menu's own (depth 2), closing via Escape correctly dropped depth to 1, and a second,
+  redundant close (outside click, menu already closed) left it at 1 rather than
+  releasing the sentinel down to 0. This exact double-decrement bug has already
+  happened once in this repo (the `openEdits` history above); this is the same defense
+  applied to the menu.
 
 ## Open items (not steps)
 

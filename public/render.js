@@ -246,9 +246,10 @@ function createTaskElement(taskId) {
   moveOutButton.setAttribute("aria-label", "Move out of Inbox");
   actions.appendChild(moveOutButton);
 
-  // Step 4: add a subtask under this task. Same stand-in-for-the-menu
-  // reasoning as the delete button (step 3) — step 8 replaces both with a
-  // real long-press/right-click menu.
+  // Step 4: add a subtask under this task. Step 8 added a right-click/
+  // long-press context menu with the same command, but this inline button
+  // stays too — the spec's task menu is an additional way to reach these
+  // actions, not a replacement for the always-visible per-row buttons.
   const addSubtaskButton = document.createElement("button");
   addSubtaskButton.type = "button";
   addSubtaskButton.className = "task-item__add-subtask-btn";
@@ -256,8 +257,10 @@ function createTaskElement(taskId) {
   addSubtaskButton.setAttribute("aria-label", "Add subtask");
   actions.appendChild(addSubtaskButton);
 
-  // Step 3: delete a (leaf) task. A dedicated per-row menu is step 8 — this
-  // is a plain button standing in for it until then.
+  // Step 3: delete a task (leaf-only refusal at the time). Step 8 turned
+  // this into a cascade delete and added the context menu's own Delete item
+  // routing to the same handler — this inline button is unchanged and stays
+  // alongside it.
   const deleteButton = document.createElement("button");
   deleteButton.type = "button";
   deleteButton.className = "task-item__delete-btn";

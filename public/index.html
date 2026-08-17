@@ -151,7 +151,10 @@
       gap: 6px;
       margin-left: auto;
     }
-    /* Stand-ins for the task menu (long-press/right-click) that step 8 adds. */
+    /* Always-visible per-row actions. Step 8 added a right-click/long-press
+       context menu (.task-menu below) that reaches the same commands, but
+       these inline buttons stay too — the menu is an additional way in, not
+       a replacement for them. */
     .task-item__add-subtask-btn,
     .task-item__delete-btn,
     .task-item__move-out-btn {
@@ -169,6 +172,47 @@
       padding-bottom: 8px;
       border-bottom: 1px solid #d1d5db;
       margin-bottom: 8px;
+    }
+    /* Step 8: the task context menu — one element for the whole app, moved
+       and re-labeled per open rather than rebuilt. It lives outside both
+       <ul>s (it's a sibling of #task-section entirely) so render.js's keyed
+       re-render, which only ever touches li's inside those lists, can never
+       tear it down while it's open. `display: none` is the resting state;
+       `:not([hidden])` promotes it to flex only while app.js has it open,
+       since a bare `.task-menu { display: flex }` would tie in specificity
+       with the browser's own `[hidden] { display: none }` rule and could
+       lose depending on stylesheet order. */
+    .task-menu {
+      position: fixed;
+      display: none;
+      flex-direction: column;
+      min-width: 170px;
+      background-color: #1f2937;
+      color: #f9fafb;
+      border-radius: 6px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+      padding: 4px;
+      z-index: 1000;
+    }
+    .task-menu:not([hidden]) {
+      display: flex;
+    }
+    .task-menu__item {
+      background: none;
+      border: none;
+      color: inherit;
+      text-align: left;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 14px;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .task-menu__item:hover {
+      background-color: rgba(255, 255, 255, 0.12);
+    }
+    .task-menu__item--danger {
+      color: #fca5a5;
     }
   </style>
 </head>
@@ -208,6 +252,19 @@
 
     <h2>My Tasks</h2>
     <ul id="task-list"></ul>
+  </div>
+
+  <!-- Step 8: the task context menu (right-click or long-press on a row).
+       Deliberately OUTSIDE #task-section's lists — see the .task-menu CSS
+       comment above for why. `data-task-id` is set by app.js when it opens;
+       "Move out of Inbox" is shown/hidden per task at open time (only an
+       Inbox row has anything to file). All three items route to the exact
+       same handler functions the existing inline per-row buttons call —
+       there is no separate menu-only implementation of any of these. -->
+  <div id="task-menu" class="task-menu" hidden>
+    <button type="button" class="task-menu__item" data-action="add-subtask">Add subtask</button>
+    <button type="button" class="task-menu__item" data-action="move-out">Move out of Inbox</button>
+    <button type="button" class="task-menu__item task-menu__item--danger" data-action="delete">Delete</button>
   </div>
 
   <!-- Pointing to our main orchestration file -->

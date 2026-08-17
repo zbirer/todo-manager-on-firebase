@@ -56,6 +56,17 @@ export function endInteraction() {
   }
 }
 
+// Read-only escape hatch onto the guard's own count. There is no test
+// runner in this project (browser-only verification, per the project
+// constraints), so a caller driving this module directly needs some way to
+// assert "did that close actually decrement, or did an idempotent guard
+// correctly no-op it" without inferring it indirectly from a 5-minute timer.
+// Nothing in app.js/render.js calls this — it exists for exactly that kind
+// of direct verification.
+export function getInteractionDepth() {
+  return interactionDepth;
+}
+
 // Starts the 5-minute background refresh. `onRefresh` is provided by the
 // caller (app.js) rather than imported here, so this module stays ignorant
 // of Firestore and DOM rendering — it only decides *when* a refresh may run.

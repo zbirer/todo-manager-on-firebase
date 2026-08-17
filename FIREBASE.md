@@ -148,6 +148,8 @@ Each task document:
 | `ancestors` | list | Optional, <= 6 entries, **root-first**. A cached denormalization of the chain above the task, written on create as `[...parent.ancestors, parent.id]`. This is where the 7-level cap is enforceable. Reads normalize a missing value to `[]` |
 | `order` | number | Fractional index used to sort the list ascending. New tasks get `min(sibling orders) - 1000`. Reads normalize a missing value (pre-existing docs) to the doc's `createdAt` in epoch millis |
 | `updatedAt` | timestamp | Re-stamped with `serverTimestamp()` on every write. Reads normalize a missing value to `createdAt` |
+| `closedByCascadeFrom` | string \| null | Set by cascade-complete (step 6): the id of the task the user actually completed (never a descendant's immediate parent), stamped on every descendant that completion closed. `null` on an open task, or one completed directly. Un-completing (step 7) reopens every non-deleted task whose `closedByCascadeFrom` matches the id being un-completed — a global filter, not a subtree walk — and resets it to `null` |
+| `deletedByCascadeFrom` | string \| null | Set by cascade-delete (step 8), exactly symmetric to `closedByCascadeFrom` above: the id of the task the user actually clicked Delete on, stamped on every live descendant that deletion swept up. `null` on the clicked task itself and on anything deleted on its own. Not yet read by any UI — step 9 (Trash) is what restores a cascade-deleted subtree by matching it |
 | `tags` | string[] | Optional, <= 50 entries. Parsed from the title by `/([#@]\w+)/g` — `#food`, `@shop` |
 | `colors.foreground` | string | Hex; app.js currently sends `#ffffff` |
 | `colors.background` | string | Hex; app.js currently sends `#10b981` |

@@ -1054,6 +1054,31 @@ driving the real modules directly):**
   or `firestore.indexes.json`: `pinned is bool` was already validated (step
   1), and step 12 is simply the first client code to ever write `true` to an
   already-valid field. Nothing about the schema itself changed.
+- **steps 11–12 review round (issues 3, 4, 7)** — three bug fixes:
+  - `handleTogglePinClick`'s `refreshTasks()` moved into a `finally`, matching
+    the shape of every other queued mutation in this file. It was previously
+    called inside the `try`, after `saveTask` — a failed write left the UI
+    silently showing the pre-write pinned state until the 5-minute timer.
+  - `performReparent` and `handleAddSubtaskClick` both derived a task's new
+    `ancestors` from the cached `ancestors` field on the parent/new-parent
+    task, contradicting taskTree.js's own header ("Parent/child links are
+    derived from `parentId`, not from the stored `ancestors` field"). Both
+    now derive the chain from `ancestorChain(freshTree, parentId)` instead —
+    robust to a stale or corrupted cached field, since it's never read.
+    `rewriteDescendantAncestors`'s signature changed to
+    `(tree, newDraggedAncestors, draggedId, descendantId)` for the same
+    reason: the descendant's tail now comes from walking `tree` via
+    `ancestorChain`, not from slicing the descendant's own cached
+    `ancestors`. `handleAddSubtaskClick` is step-4 code, not step 11/12 — it
+    carried the identical defect and is fixed here as an explicitly
+    out-of-scope fix, not as part of steps 11/12's own work.
+  - `performReparent`'s descendant-rewrite loop rescanned `getTasks().find()`
+    per iteration instead of snapshotting `const currentById = new
+    Map(getTasks().map(...))` once before the loop, the idiom steps 5, 6, and
+    8 already established — an O(n) rescan with no correctness benefit,
+    since nothing else can mutate these tasks mid-loop (the queue serializes
+    against every other enqueued mutation). Fixed to match; the loop's own
+    comment no longer claims an exactness to step 8 it didn't have.
 
 ## Open items (not steps)
 

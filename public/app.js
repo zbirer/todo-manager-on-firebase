@@ -6,7 +6,7 @@
 
 import { logInWithGoogle, logOut, monitorAuthState } from "./auth.js";
 import { addTask, fetchTasks, saveTask, softDeleteTask, purgeTask } from "./taskService.js";
-import { buildTree, depthOf, descendantIds } from "./taskTree.js";
+import { buildTree, depthOf, descendantIds, ancestorChain } from "./taskTree.js";
 import {
   getTasks,
   setTasks,
@@ -860,11 +860,15 @@ async function handleAddSubtaskClick(parentId) {
     }
 
     try {
-      // Cheap and exact: the parent's own `ancestors` (already in memory,
-      // cached root-first — see taskTree.js's ancestorChain) plus the
-      // parent's own id is precisely what ancestorChain(newTaskId) would
-      // compute, with no extra Firestore round trip to re-derive it.
-      const ancestors = [...(currentParent.ancestors || []), currentParent.id];
+      // Issue 4 fix (out-of-scope-but-identical bug, step 4 code): derived
+      // from `freshTree`/`parentId` via ancestorChain, NOT from the parent's
+      // own cached `ancestors` field. taskTree.js's own header is explicit
+      // that `parentId` is the source of truth and `ancestors` is only a
+      // cached denormalization — reading the cached field here means a stale
+      // or corrupted `ancestors` on the parent silently propagates into every
+      // new subtask underneath it, exactly the defect this fix (and
+      // performReparent's identical fix below) both close.
+      const ancestors = [...ancestorChain(freshTree, parentId), parentId];
       await addTask(
         currentUserId,
         {
@@ -953,10 +957,14 @@ async function handleTogglePinClick(taskId) {
     if (!currentUserId || !currentTask || currentTask.deleted || currentTask.completed) return;
     try {
       await saveTask(currentUserId, { ...currentTask, pinned: !currentTask.pinned });
-      await refreshTasks();
     } catch (error) {
       console.error("Failed to toggle pin:", error);
       alert("Could not update Focus.");
+    } finally {
+      // Always resync with Firestore's real state, same as every other
+      // queued mutation in this file — a failed write must not leave the UI
+      // silently showing the pre-write pinned state until the 5-minute timer.
+      await refreshTasks();
     }
   });
 }
@@ -1333,17 +1341,29 @@ function isValidReparentTarget(hoveredId) {
   return canReparent(drag.tree, drag.taskId, hoveredId, drag.subtreeHeight);
 }
 
-// Step 11 (D5): the ancestors a DESCENDANT of the moved task gets after the
-// move — the dragged task's OLD ancestor prefix (root through the dragged
-// task's own old id) is sliced out of the descendant's existing chain and
-// replaced with the dragged task's NEW one; the tail (this descendant's own
-// nesting below the dragged task) carries over unchanged. `newDraggedAncestors`
-// is the dragged task's own new `ancestors` (root-first, not including
-// itself); this returns the descendant's full chain, dragged task included.
-// Pure, exported for direct verification (11d) — the one place D5's rewrite
+// Step 11 (D5), rewritten for issue 4: the ancestors a DESCENDANT of the
+// moved task gets after the move. The tail (this descendant's own nesting
+// below the dragged task) now comes from walking `tree` via `ancestorChain`
+// — NOT from slicing the descendant's own cached `ancestors` field, which was
+// this function's original (buggy) shape. `tree` must be the pre-write
+// snapshot (`performReparent`'s `freshTree`): a reparent never changes any
+// DESCENDANT's `parentId`, only the dragged task's own, so `tree` still
+// reflects the true, current parent/child shape for every descendant even
+// though the dragged task's write may already have landed by the time a
+// later descendant's turn comes up. Deriving the tail from `parentId` (via
+// the tree) rather than from the cached field is exactly what makes this
+// robust to a descendant's `ancestors` having drifted stale or corrupt: a
+// partial write failure earlier can never propagate into this computation,
+// because this computation never reads the field it would have corrupted.
+// `newDraggedAncestors` is the dragged task's own new `ancestors` (root-first,
+// not including itself); this returns the descendant's full new chain,
+// dragged task included. Pure, exported for direct verification (11d, and
+// the corrupted-cache proof issue 4 requires) — the one place this rewrite
 // math lives, called from performReparent for the real write.
-export function rewriteDescendantAncestors(newDraggedAncestors, draggedId, oldDraggedAncestors, oldDescendantAncestors) {
-  const tail = oldDescendantAncestors.slice(oldDraggedAncestors.length + 1);
+export function rewriteDescendantAncestors(tree, newDraggedAncestors, draggedId, descendantId) {
+  const descendantChain = ancestorChain(tree, descendantId); // root-first, not including descendantId
+  const draggedIndex = descendantChain.indexOf(draggedId);
+  const tail = draggedIndex === -1 ? [] : descendantChain.slice(draggedIndex + 1);
   return [...newDraggedAncestors, draggedId, ...tail];
 }
 
@@ -1487,9 +1507,12 @@ async function performReparent(taskId, newParentId) {
     // D5/D6: the dragged task's new ancestors, and the inInbox the whole
     // moved subtree now follows. A move to root (newParentTask null) leaves
     // inInbox exactly as it was (D9) — there's no new parent to inherit from.
-    const newAncestors = newParentTask ? [...(newParentTask.ancestors || []), newParentTask.id] : [];
+    // Issue 4 fix: derived from `freshTree`/`parentId` via `ancestorChain` —
+    // NOT from `newParentTask.ancestors`, the cached field. See
+    // rewriteDescendantAncestors's own comment below for the full reasoning;
+    // this is the identical fix applied to the dragged task's own write.
+    const newAncestors = newParentTask ? [...ancestorChain(freshTree, newParentTask.id), newParentTask.id] : [];
     const newInInbox = newParentTask ? newParentTask.inInbox : currentTask.inInbox;
-    const oldAncestors = currentTask.ancestors || [];
 
     // D7: top of the new parent's (or the root group's) live children.
     // Reuses computeReorderOrder — step 10's existing top-of-group helper —
@@ -1501,6 +1524,14 @@ async function performReparent(taskId, newParentId) {
       getTasks().filter((t) => !t.deleted && t.id !== taskId && t.parentId === newParentId)
     );
     const { order: newOrder } = computeReorderOrder(null, newSiblings.length > 0 ? newSiblings[0] : null);
+
+    // Issue 7 fix: snapshotted ONCE before the loop, matching step 5/6/8's
+    // established idiom (`currentById`/`currentParent`) — nothing else can
+    // change these tasks mid-loop (the mutation queue serializes against
+    // every other enqueued mutation), so re-reading getTasks().find() per
+    // iteration was an O(n) rescan for no benefit, and silently diverged from
+    // this function's own comment claiming to mirror step 8 exactly.
+    const currentById = new Map(getTasks().map((t) => [t.id, t]));
 
     try {
       // D8: the dragged task first, then its descendants — mirrors step 8's
@@ -1514,15 +1545,16 @@ async function performReparent(taskId, newParentId) {
       });
 
       for (const id of descendantsFull) {
-        // Re-read from the store at this write's turn, not a click-time
-        // snapshot (D8, same rule as the dragged task's own write above).
-        const current = getTasks().find((t) => t.id === id);
+        const current = currentById.get(id);
         if (!current) continue; // gone by the time this write's turn came up
-        // D5: replace the dragged task's OLD ancestor prefix with its NEW
-        // one; parentId/order are untouched — only inInbox also follows (D6).
+        // D5, rewritten for issue 4: replace the dragged task's OLD ancestor
+        // prefix with its NEW one, deriving the descendant's tail from
+        // `freshTree`/`parentId` (rewriteDescendantAncestors), never from
+        // this descendant's own possibly-stale cached `ancestors`. parentId/
+        // order are untouched — only inInbox also follows (D6).
         await saveTask(userId, {
           ...current,
-          ancestors: rewriteDescendantAncestors(newAncestors, taskId, oldAncestors, current.ancestors || []),
+          ancestors: rewriteDescendantAncestors(freshTree, newAncestors, taskId, id),
           inInbox: newInInbox,
         });
       }

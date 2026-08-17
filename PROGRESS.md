@@ -1124,6 +1124,22 @@ driving the real modules directly):**
   trying to preserve, just implemented on the wrong (cross-group) input.
   Verified against the concrete failure case above: Focus order now matches
   the flattened main-list order exactly.
+- **steps 11–12 review round (issue 2)** — the edit-mode API in `render.js`
+  (`beginTitleEdit`/`endTitleEdit`/`getTitleInputValue`/`setTitleInputValue`
+  and the four note equivalents) is now parameterized over a `context`
+  argument (`"main"` or `"focus"`, selecting which entry Map to address via
+  a `CONTEXT_MAPS` lookup) instead of doubled into named `*Focus` copies —
+  16 exports collapsed back to 8, and the `isFocusRow ? Xfocus : X` ternary
+  dispatch at every `app.js` call site collapsed to passing `context`
+  through. This was step 12's own first-pass shape, which doubled every
+  accessor instead of parameterizing over row-context; it didn't extend to
+  a third context, and step 13's Overdue screen is shaped exactly like Focus
+  (flat, full task rows), so a third context was always coming.
+  `CONTEXT_MAPS` already lists all THREE row-shaped containers this codebase
+  actually has — `main`, `focus`, and Trash's own `trashEntriesByTaskId` —
+  though Trash isn't wired into `CONTEXT_MAPS` yet, since Trash rows carry
+  no edit state today; adding it is designed to be a one-line addition, not
+  another doubling, the day Trash rows grow inline editing.
 
 ## Open items (not steps)
 

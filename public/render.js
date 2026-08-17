@@ -444,19 +444,41 @@ function updateTaskElement(entry, task, depth) {
   }
 }
 
-// --- Title edit mode -------------------------------------------------------
+// --- Edit mode: parameterized over row-context -----------------------------
 // app.js decides *when* to call these (a delegated click to begin, a
 // delegated focusout to end); this module only knows *how* to swap the DOM.
 //
-// Step 12: each of these is now a thin wrapper around a `*In(map, taskId)`
-// helper parameterized on which Map to look the entry up in. A pinned task
-// has an entry in BOTH `entriesByTaskId` (its normal-place <li>) and
-// `focusEntriesByTaskId` (its Focus <li>) — two independent DOM nodes with
-// two independent `editingTitle`/`editingNote` flags — so app.js needs a way
-// to address specifically the row the user actually clicked, not "whichever
-// entry this taskId happens to resolve to". The exported `*Focus` variants
-// exist for exactly that; there is no third, taskId-only entry point that
-// could pick the wrong one.
+// Issue 2 fix: a single `taskId` stopped being enough to address "the entry"
+// once a pinned task can render in two independent places at once (step 12,
+// D4) — its normal-place row (`entriesByTaskId`) and its Focus row
+// (`focusEntriesByTaskId`) are two separate <li>s with two separate
+// `editingTitle`/`editingNote` states. Step 12's own first pass handled that
+// by doubling every accessor into a named `*Focus` copy (16 exports total)
+// plus an `isFocusRow ? X : Y` dispatch at every app.js call site — a shape
+// that does not extend to a third row-context, and step 13's Overdue screen
+// is shaped exactly like Focus (flat, full task rows), so a third context
+// was always coming. This collapses back to ONE parameterized function per
+// accessor (8 exports total), where `context` selects which Map to address.
+//
+// There are already THREE row-shaped containers in this codebase, not two:
+// "main" (`entriesByTaskId`), "focus" (`focusEntriesByTaskId`), and Trash
+// (`trashEntriesByTaskId` below) — CONTEXT_MAPS is where a fourth, or
+// Trash's own eventual edit support, becomes a one-line addition instead of
+// another doubling. Trash isn't wired in today because its rows carry no
+// edit state (see renderTrash's own comment) — there is nothing yet for
+// "trash" to address.
+const CONTEXT_MAPS = {
+  main: entriesByTaskId,
+  focus: focusEntriesByTaskId,
+};
+
+function mapForContext(context) {
+  const map = CONTEXT_MAPS[context];
+  if (!map) throw new Error(`render.js: unknown row context "${context}"`);
+  return map;
+}
+
+// --- Title edit mode -------------------------------------------------------
 
 function beginTitleEditIn(map, taskId) {
   const entry = map.get(taskId);
@@ -507,31 +529,17 @@ function setTitleInputValueIn(map, taskId, value) {
   if (entry) entry.titleInput.value = value;
 }
 
-export function beginTitleEdit(taskId) {
-  beginTitleEditIn(entriesByTaskId, taskId);
+export function beginTitleEdit(taskId, context) {
+  beginTitleEditIn(mapForContext(context), taskId);
 }
-export function endTitleEdit(taskId) {
-  endTitleEditIn(entriesByTaskId, taskId);
+export function endTitleEdit(taskId, context) {
+  endTitleEditIn(mapForContext(context), taskId);
 }
-export function getTitleInputValue(taskId) {
-  return getTitleInputValueIn(entriesByTaskId, taskId);
+export function getTitleInputValue(taskId, context) {
+  return getTitleInputValueIn(mapForContext(context), taskId);
 }
-export function setTitleInputValue(taskId, value) {
-  setTitleInputValueIn(entriesByTaskId, taskId, value);
-}
-
-// Step 12: identical behavior, addressed at the Focus row's own entry.
-export function beginTitleEditFocus(taskId) {
-  beginTitleEditIn(focusEntriesByTaskId, taskId);
-}
-export function endTitleEditFocus(taskId) {
-  endTitleEditIn(focusEntriesByTaskId, taskId);
-}
-export function getTitleInputValueFocus(taskId) {
-  return getTitleInputValueIn(focusEntriesByTaskId, taskId);
-}
-export function setTitleInputValueFocus(taskId, value) {
-  setTitleInputValueIn(focusEntriesByTaskId, taskId, value);
+export function setTitleInputValue(taskId, context, value) {
+  setTitleInputValueIn(mapForContext(context), taskId, value);
 }
 
 // --- Note edit mode ---------------------------------------------------------
@@ -572,31 +580,17 @@ function setNoteInputValueIn(map, taskId, value) {
   if (entry) entry.noteInput.value = value;
 }
 
-export function beginNoteEdit(taskId) {
-  beginNoteEditIn(entriesByTaskId, taskId);
+export function beginNoteEdit(taskId, context) {
+  beginNoteEditIn(mapForContext(context), taskId);
 }
-export function endNoteEdit(taskId) {
-  endNoteEditIn(entriesByTaskId, taskId);
+export function endNoteEdit(taskId, context) {
+  endNoteEditIn(mapForContext(context), taskId);
 }
-export function getNoteInputValue(taskId) {
-  return getNoteInputValueIn(entriesByTaskId, taskId);
+export function getNoteInputValue(taskId, context) {
+  return getNoteInputValueIn(mapForContext(context), taskId);
 }
-export function setNoteInputValue(taskId, value) {
-  setNoteInputValueIn(entriesByTaskId, taskId, value);
-}
-
-// Step 12: identical behavior, addressed at the Focus row's own entry.
-export function beginNoteEditFocus(taskId) {
-  beginNoteEditIn(focusEntriesByTaskId, taskId);
-}
-export function endNoteEditFocus(taskId) {
-  endNoteEditIn(focusEntriesByTaskId, taskId);
-}
-export function getNoteInputValueFocus(taskId) {
-  return getNoteInputValueIn(focusEntriesByTaskId, taskId);
-}
-export function setNoteInputValueFocus(taskId, value) {
-  setNoteInputValueIn(focusEntriesByTaskId, taskId, value);
+export function setNoteInputValue(taskId, context, value) {
+  setNoteInputValueIn(mapForContext(context), taskId, value);
 }
 
 // --- Note rendering ---------------------------------------------------------

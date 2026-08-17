@@ -33,6 +33,12 @@ import {
   renderTasks,
   renderTrash,
   sortTasks,
+  // Issue 2 fix: each of these takes a row-context ("main" or "focus" today
+  // — see render.js's CONTEXT_MAPS) as its second argument, addressing
+  // specifically the row the user actually interacted with. A pinned task
+  // renders in Focus AND its normal place at once (step 12, D1/D4) — two
+  // independent <li>s, two independent edit states — so a bare taskId alone
+  // can no longer identify "the entry" on its own.
   beginTitleEdit,
   endTitleEdit,
   getTitleInputValue,
@@ -41,18 +47,6 @@ import {
   endNoteEdit,
   getNoteInputValue,
   setNoteInputValue,
-  // Step 12 (D1/D4): a pinned task renders in Focus AND in its normal place
-  // at once — two independent <li>s, two independent edit states — so the
-  // Focus row's own edit-mode functions are separate exports, not a second
-  // set of arguments on the ones above. See render.js's own comment on these.
-  beginTitleEditFocus,
-  endTitleEditFocus,
-  getTitleInputValueFocus,
-  setTitleInputValueFocus,
-  beginNoteEditFocus,
-  endNoteEditFocus,
-  getNoteInputValueFocus,
-  setNoteInputValueFocus,
 } from "./render.js";
 
 // Mirrors firestore.rules' isValidTask() caps. Checked here, client-side,
@@ -601,26 +595,17 @@ taskSection.addEventListener("click", async (event) => {
   // Step 12 (D1/D4): a pinned task has TWO independent <li>s — its Focus row
   // (inside #focus-list) and its normal-place row — each with its own
   // editingTitle/editingNote state in render.js. Which one this click landed
-  // on decides which pair of begin*Edit functions (and which openEdits key,
-  // via beginEdit's field string) to use, so opening an edit here can never
+  // on decides `context` (render.js's row-context parameter, issue 2) and
+  // the openEdits key's field suffix, so opening an edit here can never
   // accidentally toggle the OTHER row's independent edit state.
   const isFocusRow = li.closest("#focus-list") != null;
+  const context = isFocusRow ? "focus" : "main";
   if (event.target.closest(".task-item__label")) {
-    if (isFocusRow) {
-      beginEdit(taskId, "title:focus");
-      beginTitleEditFocus(taskId);
-    } else {
-      beginEdit(taskId, "title");
-      beginTitleEdit(taskId);
-    }
+    beginEdit(taskId, isFocusRow ? "title:focus" : "title");
+    beginTitleEdit(taskId, context);
   } else if (event.target.closest(".task-item__note-display")) {
-    if (isFocusRow) {
-      beginEdit(taskId, "note:focus");
-      beginNoteEditFocus(taskId);
-    } else {
-      beginEdit(taskId, "note");
-      beginNoteEdit(taskId);
-    }
+    beginEdit(taskId, isFocusRow ? "note:focus" : "note");
+    beginNoteEdit(taskId, context);
   }
 });
 
@@ -1006,13 +991,14 @@ taskSection.addEventListener("keydown", (event) => {
 // edit was discarded, rather than re-alerting every time focus tries to
 // leave.
 //
-// Step 12 (D1/D4): `isFocusRow` picks which of the two independent edit-mode
-// function pairs (render.js's main vs. `*Focus` exports) this specific input
-// belongs to — the same row-vs-row disambiguation the click-to-edit listener
-// above uses — and `field` gets a `:focus` suffix to match the openEdits key
-// beginEdit used when this edit opened, so closeEdit's idempotent guard
-// closes exactly the interaction this row's edit actually holds, never the
-// OTHER row's independent one for the same task.
+// Step 12 (D1/D4): `isFocusRow`/`context` pick which of a pinned task's two
+// independent rows this specific input belongs to — the same row-vs-row
+// disambiguation the click-to-edit listener above uses (issue 2: `context`
+// is now render.js's own row-context parameter, not a second named function)
+// — and `field` gets a `:focus` suffix to match the openEdits key beginEdit
+// used when this edit opened, so closeEdit's idempotent guard closes exactly
+// the interaction this row's edit actually holds, never the OTHER row's
+// independent one for the same task.
 taskSection.addEventListener("focusout", async (event) => {
   const target = event.target;
   const isTitleInput = target.classList?.contains("task-item__title-input");
@@ -1021,22 +1007,21 @@ taskSection.addEventListener("focusout", async (event) => {
 
   const li = target.closest("li");
   const isFocusRow = li?.closest("#focus-list") != null;
+  const context = isFocusRow ? "focus" : "main";
   const field = (isTitleInput ? "title" : "note") + (isFocusRow ? ":focus" : "");
   const taskId = li?.dataset.taskId;
   const userId = getCurrentUserId();
   const task = getTasks().find((t) => t.id === taskId);
 
   const endEdit = () => {
-    if (isTitleInput) (isFocusRow ? endTitleEditFocus : endTitleEdit)(taskId);
-    else (isFocusRow ? endNoteEditFocus : endNoteEdit)(taskId);
+    if (isTitleInput) endTitleEdit(taskId, context);
+    else endNoteEdit(taskId, context);
   };
   const getValue = () =>
-    isTitleInput
-      ? (isFocusRow ? getTitleInputValueFocus : getTitleInputValue)(taskId)
-      : (isFocusRow ? getNoteInputValueFocus : getNoteInputValue)(taskId);
+    isTitleInput ? getTitleInputValue(taskId, context) : getNoteInputValue(taskId, context);
   const setValue = (value) => {
-    if (isTitleInput) (isFocusRow ? setTitleInputValueFocus : setTitleInputValue)(taskId, value);
-    else (isFocusRow ? setNoteInputValueFocus : setNoteInputValue)(taskId, value);
+    if (isTitleInput) setTitleInputValue(taskId, context, value);
+    else setNoteInputValue(taskId, context, value);
   };
 
   const cancelling = target.dataset.cancelling === "true";

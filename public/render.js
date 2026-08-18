@@ -80,6 +80,15 @@ import {
   DEFAULT_TAG_FG,
   readTagColors,
   resolveTagColor,
+  // Step 15 (Quadrant mapping): a SEPARATE resolver from resolveTagColor above
+  // — see tagColors.js's own comment on why these two must never be
+  // conflated. describeQuadrant/quadrantBadgeText only ever feed the task-row
+  // badge (Q6); ordering itself (quadrantRank) is step 16's seam, unused here.
+  readTagQuadrant,
+  resolveTaskQuadrant,
+  describeQuadrant,
+  quadrantBadgeText,
+  QUADRANT_OPTIONS,
 } from "./tagColors.js";
 
 const entriesByTaskId = new Map();
@@ -536,6 +545,17 @@ function createTaskElement(taskId) {
   ageDisplay.className = "task-item__age";
   meta.appendChild(ageDisplay);
 
+  // Step 15 (Q6): the task's resolved quadrant, shown as a compact badge —
+  // "see a task's resolved urgency/importance" is this step's whole point.
+  // Starts hidden; updateTaskElement below only ever shows it for a task with
+  // at least one configured tag (resolveTaskQuadrant !== null). Nothing is
+  // ever guessed for an unranked task (§7) — hidden means genuinely absent
+  // from the DOM's visible content, not an empty badge sitting there mute.
+  const quadrantBadge = document.createElement("span");
+  quadrantBadge.className = "task-item__quadrant-badge";
+  quadrantBadge.style.display = "none";
+  meta.appendChild(quadrantBadge);
+
   // Every per-row action button lives in one wrapper (see index.html's
   // .task-item__actions) so the group is pushed right as a whole regardless
   // of which individual buttons are visible for this task.
@@ -586,6 +606,7 @@ function createTaskElement(taskId) {
     dueDisplay,
     dueInput,
     ageDisplay,
+    quadrantBadge,
     moveOutButton,
     addSubtaskButton,
     deleteButton,
@@ -673,6 +694,23 @@ function updateTaskElement(entry, task, depth, tagSettings) {
   }
   entry.dueDisplay.classList.toggle("task-item__due-display--overdue", overdue);
   entry.ageDisplay.textContent = computeAgeLabel(task.createdAt);
+
+  // Step 15 (Q6): resolved fresh from the title on every render, exactly like
+  // resolveTagColor above and for the identical reason (D12) — never from the
+  // cached `tags` array. `null` (unranked — no configured tag at all) hides
+  // the badge entirely rather than showing an empty/placeholder one; a
+  // resolved quadrant (including the bottom quadrant, which IS ranked) shows
+  // its compact token with the full label on `title` for anyone who hovers.
+  const quadrant = resolveTaskQuadrant(task.title, tagSettings);
+  if (quadrant) {
+    entry.quadrantBadge.textContent = quadrantBadgeText(quadrant);
+    entry.quadrantBadge.title = describeQuadrant(quadrant);
+    entry.quadrantBadge.style.display = "";
+  } else {
+    entry.quadrantBadge.textContent = "";
+    entry.quadrantBadge.removeAttribute("title");
+    entry.quadrantBadge.style.display = "none";
+  }
 }
 
 // --- Edit mode: parameterized over row-context -----------------------------
@@ -1152,11 +1190,39 @@ function createSettingsElement(tagName) {
   clearButton.setAttribute("aria-label", `Clear colors for ${tagName}`);
   li.appendChild(clearButton);
 
-  return { li, preview, fgInput, bgInput, clearButton };
+  // Step 15: assigns this tag's Eisenhower quadrant — the one control this
+  // step adds to the row (per PROGRESS.md's own note that this is "one more
+  // child of that row plus one more field in the entry object, not a
+  // rewrite"). The blank option IS "unconfigured" (Q1): selecting it writes
+  // `quadrant: null` (app.js's handleTagQuadrantChange), which
+  // readTagQuadrant reads back as "no quadrant" exactly like an entry that
+  // never had the key at all.
+  const quadrantLabel = document.createElement("label");
+  quadrantLabel.className = "tag-setting__field";
+  quadrantLabel.appendChild(document.createTextNode("Quadrant "));
+  const quadrantSelect = document.createElement("select");
+  quadrantSelect.className = "tag-setting__quadrant";
+
+  const unsetOption = document.createElement("option");
+  unsetOption.value = "";
+  unsetOption.textContent = "Not set";
+  quadrantSelect.appendChild(unsetOption);
+
+  for (const quadrant of QUADRANT_OPTIONS) {
+    const option = document.createElement("option");
+    option.value = quadrant;
+    option.textContent = describeQuadrant(quadrant);
+    quadrantSelect.appendChild(option);
+  }
+  quadrantLabel.appendChild(quadrantSelect);
+  li.appendChild(quadrantLabel);
+
+  return { li, preview, fgInput, bgInput, clearButton, quadrantSelect };
 }
 
 function updateSettingsElement(entry, tagName, tagSettings) {
   const colors = readTagColors(tagSettings?.tags?.[tagName]);
+  const quadrant = readTagQuadrant(tagSettings?.tags?.[tagName]);
 
   // An unassigned tag's inputs still have to show SOME valid `#rrggbb` (the
   // control has no "unset" state), so they show the defaults a first
@@ -1171,4 +1237,9 @@ function updateSettingsElement(entry, tagName, tagSettings) {
   entry.preview.classList.toggle("tag-setting__preview--unset", !colors);
 
   entry.clearButton.style.display = colors ? "" : "none";
+
+  // Step 15: same "always resync from the settings map" rule as the color
+  // inputs above — the blank option (value "") is what an unconfigured tag
+  // (readTagQuadrant returning null) shows as, never a guessed default.
+  entry.quadrantSelect.value = quadrant ?? "";
 }

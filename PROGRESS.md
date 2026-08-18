@@ -1,7 +1,7 @@
 # Progress
 
-Last updated: 2026-08-17 — **Steps 1–14 implemented.** Step 15 (Quadrant
-mapping) is next. No signed-in browser walkthrough has been reported back for
+Last updated: 2026-08-18 — **Steps 1–15 implemented.** Step 16 (Priority
+ordering) is next. No signed-in browser walkthrough has been reported back for
 any step yet — the click-path below is still the first thing to run.
 
 ## Step table
@@ -22,75 +22,75 @@ any step yet — the click-path below is still the first thing to run.
 | 12 | Focus / pin | done |
 | 13 | Dates | done |
 | 14 | Tag colors | done |
-| 15 | Quadrant mapping | next |
-| 16 | Priority ordering | planned |
+| 15 | Quadrant mapping | done |
+| 16 | Priority ordering | next |
 | 17 | Tag rename/delete | planned |
 | 18 | Recurrence | planned |
 | 19 | Search — basic | planned |
 | 20 | Search — advanced | planned |
 | 21 | Export / import | planned |
 
-## Resume here — step 15 (Quadrant mapping)
+## Resume here — step 16 (Priority ordering)
 
-**Exact next action:** implement step 15, per product-spec.md §7
-("Productivity & Prioritization") — the "Auto-Eisenhower Matrix", "Resolving
-Several Tags" and "Tag Settings Page" bullets. Step 14 built the screen and the
-storage this extends; nothing about either needs redesigning.
+**Exact next action:** implement step 16, per product-spec.md §3 ("List
+Order", lines 97-107) and §7 ("Recommended Order", lines 214-219). Step 15
+built every piece step 16 consumes — a task's quadrant is already computable
+(`resolveTaskQuadrant`, tagColors.js) and already ranked
+(`quadrantRank`, tagColors.js, 0 = urgent+important … 4 = unranked). Nothing
+about either needs redesigning; this step is purely about wiring them into
+the one seam left for it.
 
-- **The screen already exists.** `#settings-view` (index.html), `views.settings`
-  /`renderSettingsView` (app.js), `renderSettings`/`createSettingsElement`/
-  `updateSettingsElement` (render.js). A settings row is a flex line that
-  already holds `[preview] [Text swatch] [Background swatch] [Clear colors]` —
-  adding a quadrant control is one more child of that row plus one more field
-  in the entry object, not a rewrite. product-spec.md §7 is explicit this is
-  "the same screen that sets each tag's colors", and step 14 (D4) built it that
-  way on purpose.
-- **The storage already exists and is already shaped for this.** One document,
-  `users/{uid}/meta/settings`, field `tags: { [tagName]: { fg, bg } }` — the
-  entry is an OBJECT precisely so step 15 adds a `quadrant` key to the SAME
-  entry rather than forking a second map (step 14, D1/D7).
-  `normalizeTagSettings` (tagColors.js) already copies unrecognized entry keys
-  through verbatim, and `handleTagColorChange` (app.js) already spreads the
-  existing entry before writing colors — verified live that a `quadrant` key
-  survives a color change made after it. So the write side needs a sibling of
-  `handleTagColorChange` (a `handleTagQuadrantChange`, same
-  `updateTagSettings(mutate, message)` helper, same whole-document
-  `enqueueMutation`+`saveSettings`+`finally refreshTasks()` shape), not a new
-  write path.
-- **DO NOT reuse the color resolver.** This is the trap step 14 left a comment
-  about in two places (`resolveTagColor` in tagColors.js, and D8 below). Color
-  resolution is *last colored tag in the title string wins*. Quadrant
-  resolution is *urgency and importance each independently take the HIGHEST
-  value any of the task's tags claims, escalating never averaging, across ALL
-  tags* — string position is irrelevant. Two rules, one settings page, one
-  entry object. Write a NEW pure exported function in `tagColors.js` next to
-  `resolveTagColor`; do not parameterize one function to do both.
-- **An unconfigured tag contributes nothing** (§7: "Nothing is ever guessed on
-  my behalf: an unconfigured tag stays silent rather than defaulting into a
-  quadrant"). `readTagColors`'s shape is the precedent — a per-field reader
-  that returns `null` for an entry that doesn't validly carry that field, so a
-  tag can have colors and no quadrant, or a quadrant and no colors.
-- **`firestore.rules` still needs no change.** `isValidSettings()`
-  (firestore.rules:61-65) accepts any `tags` map with <= 500 keys and does not
-  constrain entry shape at all — confirmed by reading it in full for step 14
-  (D6). A `quadrant` key inside an entry passes it exactly as `fg`/`bg` do.
-  Do NOT write `weekStart` — that field belongs to step 20.
-- **Step 16 (priority ordering) is the consumer, not this step.** §7's
-  "Recommended Order" drives the main list's sort via `compareSiblings`
-  (render.js) — that is step 16's seam and step 15 must not touch it. Step 15
-  ends at "every tag can be assigned a quadrant, and a task's quadrant is
-  computable"; making the list actually sort by it is the next step's work.
+- **The seam is `compareSiblings` (render.js), and it is the ONLY thing this
+  step changes about ordering.** Today: `(a, b) => a.order - b.order`. It
+  becomes a two-key comparator: **quadrant rank first, `order` second** —
+  `quadrantRank(resolveTaskQuadrant(a.title, tagSettings)) -
+  quadrantRank(resolveTaskQuadrant(b.title, tagSettings))`, falling back to
+  `a.order - b.order` on a tie. This is exactly what step 1's Decisions log
+  already locked ahead of time: *"`order` is a fractional index scoped to
+  `parentId` siblings, and is always the tie-breaker applied *after*
+  quadrant rank once step 16 lands (`(quadrantRank, order)`, computed
+  client-side on every render, never stored)."* Do not invent a different
+  formula — that decision already picked one.
+- **`compareSiblings` doesn't currently take `tagSettings`.** It's called from
+  `flattenTree` (render.js), which is called from `renderTasks` (which already
+  receives `tagSettings` as a parameter, step 14) — so `tagSettings` has to
+  thread one level further down than it does today: `flattenTree(tree,
+  tagSettings)` → `compareSiblings(a, b, tagSettings)`. Every call site of
+  `flattenTree`/`compareSiblings` inside render.js needs that same parameter
+  added; there should be no second, independent sibling comparator anywhere
+  else (Focus and Overdue already sort via this same seam per steps 12/13's
+  Decisions — issue 1's fix and D5 — so they inherit quadrant-first ordering
+  automatically the moment this lands, not as separate work).
+- **The overruled-drag visibility requirement is this step's UI half, not
+  optional polish** (product-spec.md:104-107): *"a drag can be overruled.
+  Dragging a low-priority task above a high-priority one will not hold,
+  because priority is applied first... the interface should make that
+  visible rather than letting a drag appear to work and then snap back."*
+  Step 10's own Decisions entry already applied this exact principle to a
+  same-drag invalid target (no indicator at all, rather than indicator-then-
+  revert) — step 16 needs the equivalent for a *priority*-overruled drop: if
+  a manual reorder would place a task on the wrong side of a quadrant-rank
+  boundary, the drop must not silently snap back with no explanation. Decide
+  the concrete mechanism when building this (a disabled/refused drop
+  indicator segment at a rank boundary is the most direct reading of "make it
+  visible," but this is not yet locked — record whatever is chosen as a new
+  Decision, don't leave it implicit).
+- **Manual order still survives — it's the tie-breaker, not overridden.**
+  Step 10/11's drag machinery, `computeReorderOrder`, and the fractional-index
+  precision-renumber guard are all unchanged; this step only changes what
+  *sorts before* comparing `order`, never how `order` itself is computed or
+  written.
+- **Nothing about step 15's storage or resolution changes.** `quadrantRank`
+  and `resolveTaskQuadrant` (tagColors.js) are already exported specifically
+  so this step only imports them — do not re-derive urgency/importance here.
 
-**Files likely touched:** `public/tagColors.js` (the new quadrant resolver +
-a per-entry quadrant reader, alongside the existing color ones),
-`public/render.js` (`createSettingsElement`/`updateSettingsElement` grow a
-quadrant `<select>`), `public/app.js` (`handleTagQuadrantChange` routed
-through the existing `updateTagSettings`, plus one branch in the delegated
-`change` listener next to the existing `.tag-setting__color` branch),
-`public/index.html` (styling for the new control). No change expected to
-`firestore.rules`, `firestore.indexes.json`, `settingsService.js`, or
-`store.js` — the document shape, the write path and the cache all already
-carry this.
+**Files likely touched:** `public/render.js` (`compareSiblings` grows a
+`tagSettings` parameter and the two-key comparison; `flattenTree` and every
+caller thread it through), `public/app.js` (the drag-target validity check
+gains a priority-boundary case if that's the chosen visibility mechanism).
+No change expected to `public/tagColors.js` (step 15 already exports
+everything this step needs), `firestore.rules`, or
+`firestore.indexes.json`.
 
 **No step has been confirmed in a signed-in browser yet.** Everything below marked
 "verified" was verified unsigned-in, by driving the real modules with synthetic
@@ -390,6 +390,54 @@ a bogus `does not provide an export named ...` error and cost real time once alr
   already passed rules before this step existed. The rules file has had a
   `users/{userId}/meta/{docId}` match block since before step 1; step 14 is
   simply the first client code to use it.
+
+**Files touched (step 15):**
+- `public/tagColors.js` — a whole new section, pure, alongside the existing
+  color functions: `QUADRANT_URGENT_IMPORTANT`/`QUADRANT_IMPORTANT_ONLY`/
+  `QUADRANT_URGENT_ONLY`/`QUADRANT_NEITHER` (Q1's four exact enum strings) and
+  `QUADRANT_OPTIONS` (the settings `<select>`'s option order); `readTagQuadrant`
+  (Q5 — mirrors `readTagColors`'s null-on-anything-invalid shape exactly);
+  `resolveTaskQuadrant` (Q2/Q4 — the independent-OR-across-configured-tags
+  resolver, resolved from the title via `parseTags`, never from the cached
+  `tags` array — D12's precedent; returns `null`, distinct from
+  `QUADRANT_NEITHER`, when no tag is configured); `quadrantRank` (Q3 — the
+  0..4 order, exported so step 16 only imports it); `describeQuadrant`/
+  `quadrantBadgeText` (the task-row badge's full label and compact token).
+  Internal `decomposeQuadrant`/`composeQuadrant` do the enum-to-booleans and
+  back conversion and are not exported — nothing outside this module needs
+  urgency/importance as separate values, since Q1 forbids storing them
+  separately.
+- `public/render.js` — `createSettingsElement` grows a `<select
+  class="tag-setting__quadrant">` (blank "Not set" option plus the four
+  `QUADRANT_OPTIONS`, each labeled via `describeQuadrant`);
+  `updateSettingsElement` resyncs its value from `readTagQuadrant` on every
+  render, same "always resync, no editing-state guard" rule the color inputs
+  already follow. `createTaskElement` grows a `.task-item__quadrant-badge`
+  span in the existing `.task-item__meta` row (next to the age span), starting
+  hidden; `updateTaskElement` resolves `resolveTaskQuadrant(task.title,
+  tagSettings)` on every render (same "recomputed fresh from the title, never
+  stored" rule due-date/age already follow) and shows the badge (text +
+  `title` attribute) only when a quadrant actually resolves, hiding it
+  entirely — not emptied-but-visible — otherwise (Q6). `compareSiblings` and
+  every sort path are **untouched** (Q7 — verified by `git diff`, no match).
+- `public/app.js` — `handleTagQuadrantChange` (a sibling of
+  `handleTagColorChange`, through the same `updateTagSettings(mutate,
+  message)` helper, same whole-document `enqueueMutation`+`saveSettings`+
+  `finally refreshTasks()` shape), spreading the existing entry so a quadrant
+  change never drops a tag's colors; a `.tag-setting__quadrant` branch in the
+  delegated `change` listener, placed alongside the existing
+  `.tag-setting__color` branch (both still before the code that requires a
+  `data-task-id`, per step 14's D4 precedent).
+- `public/index.html` — `.task-item__quadrant-badge` CSS (a small pill in the
+  existing meta row) and `.tag-setting__quadrant` CSS (the new `<select>`,
+  styled as one more field in the settings row's existing flex layout).
+- No change to `firestore.rules` or `firestore.indexes.json` — `isValidSettings()`
+  (re-confirmed, not re-read from scratch — step 14 already read it in full)
+  constrains only `weekStart`'s value and `tags`'s type/key-count, never entry
+  shape, so a `quadrant` key inside an entry passes exactly as `fg`/`bg` do.
+  `weekStart` itself is still never written (that's step 20's field). No
+  change to `settingsService.js` or `store.js` — the whole-document write path
+  and the `tagSettings` cache already carried this without modification.
 
 **Verified (actually exercised in a real browser at localhost:5050, unsigned-in, by
 driving the real modules directly):**
@@ -1091,6 +1139,90 @@ driving the real modules directly):**
   suppressing that write. Deliberate: adding a fourth edit flag would have to
   go into `closeAnyOpenEdits` (step 13's review-round rule), and a color input
   has no commit/cancel lifecycle to hang one on.
+
+- **Step 15's resolver, verified as a pure function against
+  `tagColors.js` directly (a standalone Node script, not the browser — no
+  DOM/Firestore involved in resolution at all), then the DOM/event-routing
+  half verified live at localhost:5050 unsigned-in:**
+  - The spec's own worked example (§7): a task carrying both `#p1` (mapped to
+    `not-urgent-important`) and `#deadline` (mapped to `urgent-not-important`)
+    resolved to `urgent-important` — escalation across two single-dimension
+    tags produced the two-dimension quadrant neither tag alone claims.
+  - The null-vs-`QUADRANT_NEITHER` distinction (Q2), the case this step is
+    easiest to get silently wrong: a task with no tags, and a task whose only
+    tag is present in the map but has no `quadrant` key, both resolved to
+    `null` (unranked); a task whose only tag was explicitly mapped to
+    `not-urgent-not-important` resolved to that string, not `null`. Directly
+    confirmed `quadrantRank(null) > quadrantRank(QUADRANT_NEITHER)` (4 > 3) —
+    an explicit bottom-quadrant tag outranks no mapping at all, per Q3.
+  - The full rank order (`urgent-important` 0, `not-urgent-important` 1,
+    `urgent-not-important` 2, `not-urgent-not-important` 3, unranked 4,
+    including an unrecognized string also landing at 4).
+  - `readTagQuadrant` fed 15 malformed/partial shapes (`null`, `undefined`,
+    `{}`, `{quadrant: null}`, wrong case, wrong separator, a number, an array,
+    a nested object, an entry with colors but no quadrant key, a bare string
+    entry, `42`, `[]`, etc.) — zero throws, every one read back as `null`.
+  - Tag-order irrelevance: swapping the position of two configured tags in
+    the title produced the identical resolved quadrant (unlike
+    `resolveTagColor`, where position is everything) — the two rules'
+    fundamental difference (D8, step 14) verified as actual divergent
+    behavior, not just asserted in a comment.
+  - `resolveTaskQuadrant` against a missing/malformed `tagSettings` itself
+    (`null`, `{}`, `{tags: null}`) — all `null`, no throws.
+- **The settings screen, driven live via the real `renderSettings` (imported
+  fresh with a cache-busting query per this project's known stale-module
+  trap, then re-verified via a genuine navigation with every module
+  HTTP-cache-primed via `fetch(..., {cache:"reload"})` first):** a tag with
+  both colors and a quadrant (`#p1`) rendered its `<select>` at
+  `"urgent-important"` AND kept its `fg`/`bg` swatch values — colors and
+  quadrant read independently off the same entry, neither one clobbering the
+  other's display. A tag with colors but no quadrant (`@office`) rendered its
+  select at `""` (the blank "Not set" option) while its swatch stayed
+  colored — a colored tag keeping its colors with no quadrant assigned, the
+  explicit Q5 requirement.
+- **The real write path's DOM event routing, driven against the app's ACTUAL
+  running `app.js` instance (not a separately-imported copy) while genuinely
+  unsigned-in:** a synthetic `<select class="tag-setting__quadrant"
+  data-tag-name="#p1">` inserted into the real `#settings-list` (inside
+  `#task-section`, where the real delegated `change` listener lives) and
+  given a real bubbling `change` event was caught by the actual
+  `handleTagQuadrantChange` → `updateTagSettings` path — confirmed by reading
+  `store.js`'s real live `getTagSettings()` cache before and after: **byte
+  identical** (`{"tags":{}}` both times), proving the write correctly
+  no-ops when `getCurrentUserId()` is `null`, exactly like every other
+  mutation path in this project that has never had a signed-in session to
+  execute against.
+- **The task-row badge, driven via the real `renderTasks` against synthetic
+  tasks:** a task carrying a mapped tag (`#p1` → `urgent-important`) rendered
+  its badge visible (`display: ""`), text `"U+I"`, and `title="Urgent &
+  important"`; a task carrying only an unmapped tag (`#nomap`, absent from
+  the settings map entirely) rendered its badge with `display: "none"`, empty
+  text, and no `title` attribute at all — genuinely absent, nothing guessed,
+  matching Q6 exactly.
+- **Ordering did NOT change — this step's explicit deliverable (Q7).**
+  `git diff public/render.js` shows zero lines touching `compareSiblings`.
+  Behaviorally confirmed too: two synthetic tasks, one unranked with a LOWER
+  `order` and one mapped to the TOP quadrant with a HIGHER `order`, rendered
+  through the real `renderTasks` in `order` sequence (`[A, B]`) — quadrant
+  had no effect on render position, exactly as step 15 is scoped to leave for
+  step 16.
+- **Every real Firestore call this step could have added has never
+  executed**, same limitation as every step since 11: `saveSettings`'s
+  `setDoc` was never reached with a real payload from
+  `handleTagQuadrantChange`, because this session — like every one before
+  it — never set a fake signed-in uid. What was verified instead: the exact
+  no-op behavior above, and the write payload shape by direct code reading
+  (`{ ...(tags[tagName] ?? {}), quadrant: quadrant || null }`, which spreads
+  the existing entry before overwriting only the `quadrant` key — the same
+  shape `handleTagColorChange` uses in reverse, already verified live in step
+  14 (14i) for the colors-survive-a-quadrant-change direction; this step's
+  quadrant-survives-a-color-change direction was not independently
+  re-exercised as a live write, only read-verified via the settings-screen
+  DOM check above (a tag with both fields set displays both correctly).
+- **The native `<select>` was never driven as a real user would drive it**
+  (no click-to-open, no keyboard/mouse option selection) — same limitation
+  step 14 recorded for the native color picker. Its `change` event was
+  dispatched directly, and the handler chain from there is verified.
 
 ## Decisions
 
@@ -1898,6 +2030,95 @@ driving the real modules directly):**
   against `isValidSettings()`'s 500-key cap — acceptable, since tag creation is
   a human typing act and step 17 (tag rename/delete) is the step that owns
   removing a tag outright.
+
+- **step 15 (Q1, storage — locked by the orchestrator, not re-litigated)** —
+  a quadrant is a SINGLE enum string (`entry.quadrant`, one of
+  `"urgent-important"` / `"not-urgent-important"` / `"urgent-not-important"` /
+  `"not-urgent-not-important"`) on the same settings entry step 14 built,
+  never two boolean fields. The spec (§7) says "assign a quadrant," singular,
+  and its own worked examples (`#p1`, `#deadline`) are whole quadrants a
+  human picks directly — urgency/importance only ever exist as values
+  DERIVED from this string at resolve time (`resolveTaskQuadrant`), never
+  stored as their own fields. Absent, `null`, or any unrecognized string all
+  read back as "unconfigured" (`readTagQuadrant`).
+- **step 15 (Q2, resolution — the null-vs-explicit-bottom-quadrant
+  distinction)** — urgency and importance are each resolved independently as
+  an OR across every CONFIGURED tag a task carries (an unconfigured tag
+  contributes NOTHING, not `false`), escalating never averaging — the exact
+  same "most demanding tag wins" framing D8 (step 14) already used to
+  contrast this from color resolution. Critically, `resolveTaskQuadrant`
+  returns `null` ("unranked") when NONE of a task's tags carries a valid
+  quadrant — a state deliberately distinct from `QUADRANT_NEITHER`
+  ("explicitly neither urgent nor important," still a real answer from a
+  real tag mapping). Conflating the two would make an entirely unmapped task
+  rank identically to one whose only configured tag explicitly claims the
+  bottom quadrant, which directly contradicts §7's "an unconfigured tag stays
+  silent rather than defaulting into a quadrant" — silence and an explicit
+  "neither" are not the same thing, and only the rank order (Q3) makes that
+  distinction observable.
+- **step 15 (Q3, the rank order — this step's own recorded call, spec
+  silent)** — `quadrantRank` (tagColors.js): `0` urgent+important, `1`
+  important-only, `2` urgent-only, `3` neither, `4` unranked. The
+  important-before-urgent choice (rank 1 before rank 2) is standard
+  Eisenhower framing (schedule outranks delegate); product-spec.md never
+  states an order between the two single-dimension quadrants, so this is
+  recorded here rather than left as an implementation accident. Exported
+  specifically so step 16 (priority ordering) only ever imports it — that
+  step's own Resume-here section above says as much. Unranked (`4`) sorting
+  worse than every explicit quadrant including `QUADRANT_NEITHER` (`3`) is
+  the direct consequence of Q2's null-vs-neither distinction: "no information
+  at all" cannot outrank a real, if unambitious, mapping.
+- **step 15 (Q4, do not reuse `resolveTagColor`)** — a completely separate,
+  newly-written pure function (`resolveTaskQuadrant`), never a
+  parameterization of the color resolver, per D8 (step 14)'s own warning
+  comment sitting directly on `resolveTagColor`. Color = last COLORED tag in
+  the title STRING wins (position is everything). Quadrant = highest urgency
+  and highest importance independently across ALL tags (position is
+  irrelevant) — verified as actually divergent behavior, not just asserted:
+  swapping two configured tags' order in a title left the resolved quadrant
+  unchanged while the identical swap is exactly what flips the resolved
+  color. Both resolvers read from the TITLE string via `parseTags`, never
+  from the cached `tags` array (D12's precedent extended, not re-argued).
+- **step 15 (Q5, per-field reader)** — `readTagQuadrant` mirrors
+  `readTagColors`'s exact shape: `null` for any entry that doesn't validly
+  carry a quadrant (missing, malformed, or an unrecognized string), so a tag
+  can have colors and no quadrant, or a quadrant and no colors, on the same
+  entry object. Verified against 15 malformed/partial shapes with zero
+  throws (see Verified).
+- **step 15 (Q6, the task-row badge)** — a compact pill
+  (`.task-item__quadrant-badge`) in the existing `.task-item__meta` row,
+  next to age, with the full quadrant name on its `title` attribute (a native
+  hover tooltip) rather than spelled out inline — keeping the row compact and
+  not disturbing an RTL title above it. Resolved fresh on every render from
+  the title (never stored), and genuinely ABSENT (`display: none`, no text,
+  no `title` attribute) for an unranked task — not an empty badge sitting
+  there mute. This reuses `createTaskElement`/`updateTaskElement`, so Focus
+  and Overdue rows (which share that same function pair) get the badge for
+  free; Trash rows do not, since Trash uses its own separate, simpler row
+  builder that was never given `tagSettings` to resolve from.
+- **step 15 (Q7, ordering explicitly untouched)** — `compareSiblings` and
+  every sort path in `render.js`/`app.js` are byte-for-byte unchanged
+  (confirmed via `git diff`, not merely "we didn't mean to touch it"). This
+  step ends at "every tag can be assigned a quadrant, and a task's quadrant
+  is computable and visible" — wiring `quadrantRank` into the actual sort
+  comparator is step 16's work alone, per step 1's own Decisions entry that
+  already named this handoff (`(quadrantRank, order)`) before this step
+  existed.
+- **step 15 (write path)** — a sibling of `handleTagColorChange`
+  (`handleTagQuadrantChange`, app.js), through the same
+  `updateTagSettings(mutate, failureMessage)` helper, same whole-document
+  `enqueueMutation`+`saveSettings`+`finally refreshTasks()` shape — no second
+  write path. Spreads the existing entry (`{ ...(tags[tagName] ?? {}),
+  quadrant: quadrant || null }`) so a quadrant change never drops a tag's
+  colors, mirroring `handleTagColorChange`'s own spread in the other
+  direction. The `<select>`'s blank option writes `quadrant: null` explicitly
+  (not `undefined`, which `setDoc` would reject, and not an omitted key,
+  which would leave a stale prior value standing in a whole-document write).
+- **step 15 (not really a decision) — no change to `firestore.rules` or
+  `firestore.indexes.json`.** `isValidSettings()` was already read in full for
+  step 14 (D6) and constrains only `weekStart`'s value and `tags`'s
+  type/key-count, never entry shape — a `quadrant` key inside an entry passes
+  exactly as `fg`/`bg` do. `weekStart` remains unwritten (step 20's field).
 
 ## Open items (not steps)
 

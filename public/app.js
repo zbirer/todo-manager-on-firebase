@@ -17,6 +17,12 @@ import {
   DEFAULT_TAG_FG,
   DEFAULT_TAG_BG,
 } from "./tagColors.js";
+// Step 15 (Quadrant mapping): app.js's own write handler below
+// (handleTagQuadrantChange) never needs to VALIDATE the incoming value — it
+// writes whatever the <select> held (or null for the blank option) straight
+// through, same as handleTagColorChange does for fg/bg. Reading a quadrant
+// back out for resolution/display is render.js's concern (resolveTaskQuadrant,
+// tagColors.js), not app.js's.
 import {
   buildTree,
   depthOf,
@@ -651,6 +657,16 @@ taskSection.addEventListener("change", (event) => {
     return;
   }
 
+  // Step 15: the Tag Settings screen's quadrant <select>, same delegated
+  // listener, same "checked before a data-task-id is required" placement as
+  // the color branch just above.
+  const quadrantSelect = event.target.closest(".tag-setting__quadrant");
+  if (quadrantSelect) {
+    const tagName = quadrantSelect.closest("li")?.dataset.tagName;
+    if (tagName) handleTagQuadrantChange(tagName, quadrantSelect.value);
+    return;
+  }
+
   const checkbox = event.target.closest(".task-item__checkbox");
   if (!checkbox) return;
 
@@ -1246,6 +1262,23 @@ async function handleTagClearColors(tagName) {
       return { ...tags, [tagName]: rest };
     },
     "Could not clear the tag color."
+  );
+}
+
+// Step 15 (Q1): assigns (or clears) one tag's quadrant. `quadrant` is the
+// <select>'s raw value — the blank option's "" is normalized to `null` here,
+// which readTagQuadrant (tagColors.js) reads back as "unconfigured" exactly
+// like a missing key. The existing entry is spread first (mirroring
+// handleTagColorChange's own comment) so a quadrant change never drops a
+// tag's colors, and a color change made after this survives this quadrant
+// the same way (already verified for the reverse direction in step 14, 14i).
+async function handleTagQuadrantChange(tagName, quadrant) {
+  await updateTagSettings(
+    (tags) => ({
+      ...tags,
+      [tagName]: { ...(tags[tagName] ?? {}), quadrant: quadrant || null },
+    }),
+    "Could not save the tag quadrant."
   );
 }
 

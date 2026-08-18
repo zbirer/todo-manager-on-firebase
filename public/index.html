@@ -177,8 +177,22 @@
       font-size: 13px;
       margin: 4px 0;
     }
+    /* `flex: 1` is what makes the whole rest of the line an edit target, not
+       just the glyphs. app.js's delegated click handler opens the title editor
+       via `event.target.closest(".task-item__label")`, so a click only counts
+       when it lands INSIDE this element — and a bare inline span is exactly as
+       wide as its text, which left the empty space after a short title dead.
+       Growing the label to fill the row's remaining width means clicking
+       anywhere on the task's line, text or past it, opens the editor, matching
+       how an outliner behaves. `min-width: 0` lets it shrink below its content
+       width so a long title still wraps instead of forcing the row wider.
+       Kept in sync with .task-item__title-input's own `flex: 1` below, so the
+       input that replaces this label occupies the identical box and the row
+       does not jump on entering edit mode. */
     .task-item__label {
       cursor: text;
+      flex: 1;
+      min-width: 0;
     }
     .task-item__title-input {
       flex: 1;

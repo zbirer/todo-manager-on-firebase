@@ -16,6 +16,14 @@ import {
   readTagColors,
   DEFAULT_TAG_FG,
   DEFAULT_TAG_BG,
+  // Step 16 (Priority ordering): the drag machinery needs to know a task's
+  // rank to decide whether a hovered gap is "free" (R5) — computeQuadrantRankMap
+  // is the one shared builder render.js's own comparator also reads from (see
+  // its comment in tagColors.js); resolveTaskQuadrant/describeQuadrant are only
+  // used here to word the overruled-drop message.
+  computeQuadrantRankMap,
+  resolveTaskQuadrant,
+  describeQuadrant,
 } from "./tagColors.js";
 // Step 15 (Quadrant mapping): app.js's own write handler below
 // (handleTagQuadrantChange) never needs to VALIDATE the incoming value — it
@@ -488,7 +496,13 @@ function renderTrashView() {
 // updateTaskElement), flat, at depth 0 — exactly Focus's row shape.
 function renderOverdueView() {
   const nonDeletedTasks = getTasks().filter((task) => !task.deleted);
-  const orderIndex = computeMainListOrderIndex(nonDeletedTasks);
+  // Step 16 (R4): one Map<taskId, rank> for this render pass (per
+  // computeQuadrantRankMap's own comment — never rebuilt per comparison),
+  // threaded into the exact same computeMainListOrderIndex/flattenTree path
+  // renderMainView's renderTasks call already uses — Overdue gets
+  // quadrant-first ordering with no ordering rule of its own.
+  const rankMap = computeQuadrantRankMap(nonDeletedTasks, getTagSettings());
+  const orderIndex = computeMainListOrderIndex(nonDeletedTasks, rankMap);
   const overdueTasks = nonDeletedTasks
     .filter((task) => isOverdueTask(task))
     .sort((a, b) => (orderIndex.get(a.id) ?? Infinity) - (orderIndex.get(b.id) ?? Infinity));
@@ -1560,9 +1574,19 @@ function cancelLongPress() {
 //     non-root task's siblings already share both fields automatically
 //     (inherited from the same parent), so this check is a no-op there and
 //     only matters at the root.
-//   - otherSiblingIds: every OTHER live sibling's id, ascending by `order` —
-//     i.e. the exact order render.js's sortTasks/compareSiblings already
-//     renders them in. Used to find neighbours by array position.
+//   - otherSiblingIds: every OTHER live sibling's id, in the exact
+//     `(quadrantRank, order)` order render.js's sortTasks/compareSiblings
+//     renders them in (step 16) — used to find neighbours by array position.
+//   - rankMap / draggedRank (step 16, R5): a snapshot, taken once in
+//     beginDrag alongside tree/descendantIdSet/subtreeHeight below and for
+//     the identical reason (nothing mutates the store mid-drag) — `rankMap`
+//     covers the dragged task plus every other sibling, `draggedRank` is
+//     just `rankMap.get(taskId)` pulled out for convenience. Used by
+//     updateDragTarget to decide whether a hovered gap sits inside the
+//     dragged task's own contiguous same-rank run (free) or crosses into a
+//     different rank's run (constrained/overruled) — never recomputed via
+//     resolveTaskQuadrant per pointermove, per computeQuadrantRankMap's own
+//     comment in tagColors.js.
 //   - tree / descendantIdSet / subtreeHeight (step 11, D3/D4): a snapshot
 //     taken once in beginDrag, not recomputed on every pointermove — nothing
 //     mutates the store mid-drag (the interaction guard blocks the 5-minute
@@ -1575,15 +1599,22 @@ function cancelLongPress() {
 //     firestore.rules, so nothing later in the write batch can be allowed to
 //     land in a state the rules would reject. `subtreeHeight` is the height
 //     of the dragged task's own subtree (0 for a leaf) — see D4's formula.
-//   - target: `{ type: 'sibling', beforeId, afterId }` (either id may be
-//     null, meaning "top of the group" / "bottom of the group") once the
-//     pointer is hovering a valid sibling drop position, or
-//     `{ type: 'reparent', parentId }` once it's hovering a valid reparent
-//     target (D1), or `null` when it isn't hovering a valid position of
-//     either kind (product-spec.md's "a drag can be overruled... the
-//     interface should make that visible rather than letting a drag appear
-//     to work and then snap back" — an invalid target simply never becomes a
-//     valid one, rather than showing a misleading indicator).
+//   - target: `{ type: 'sibling', beforeId, afterId, overruled }` (either id
+//     may be null, meaning "top of the group" / "bottom of the group"; step
+//     16's `overruled` is true when this exact gap crosses a quadrant-rank
+//     boundary — see updateDragTarget) once the pointer is hovering a valid
+//     sibling drop position, or `{ type: 'reparent', parentId }` once it's
+//     hovering a valid reparent target (D1), or `null` when it isn't
+//     hovering a valid position of either kind (product-spec.md's "a drag
+//     can be overruled... the interface should make that visible rather than
+//     letting a drag appear to work and then snap back" — an invalid target
+//     simply never becomes a valid one, rather than showing a misleading
+//     indicator). Step 16 is a DIFFERENT visibility case from this one: a
+//     sibling target with `overruled: true` IS a valid, droppable target
+//     (R5 — the write still lands) — it just won't visually hold once
+//     priority re-sorts the list, which is why it gets its own distinct
+//     indicator styling (showDropIndicator's `overruled` argument) instead
+//     of being refused like an invalid target is.
 //   - handleEl / pointerId: needed to release pointer capture on drop/cancel.
 let drag = null;
 
@@ -1610,7 +1641,15 @@ function closeDragInteraction() {
 const dropIndicator = document.createElement("li");
 dropIndicator.className = "drop-indicator";
 
-function showDropIndicator(referenceLi, before) {
+// Step 16 (R5): `overruled` toggles a second class (index.html's
+// `.drop-indicator--overruled`) that paints this exact gap differently
+// BEFORE the user releases, so a position that crosses a quadrant-rank
+// boundary is knowable up front rather than looking identical to a free
+// position and then silently not holding after the drop. This is still a
+// perfectly valid, droppable target — see the `drag` doc comment's target
+// entry — the styling is the whole point, not a refusal.
+function showDropIndicator(referenceLi, before, overruled = false) {
+  dropIndicator.classList.toggle("drop-indicator--overruled", overruled);
   const parent = referenceLi.parentElement;
   if (before) parent.insertBefore(dropIndicator, referenceLi);
   else parent.insertBefore(dropIndicator, referenceLi.nextSibling);
@@ -1618,9 +1657,12 @@ function showDropIndicator(referenceLi, before) {
 
 // Fully detaches the indicator rather than just hiding it, so it can never
 // linger as a stray child for some later renderTasks call to have to
-// reconcile around.
+// reconcile around. Also drops the overruled styling so the NEXT time this
+// shared element is shown it doesn't inherit a stale class from whichever
+// gap was hovered last.
 function hideDropIndicator() {
   dropIndicator.remove();
+  dropIndicator.classList.remove("drop-indicator--overruled");
 }
 
 // Step 11 (D2): the middle-50%-of-the-row "reparent onto this task" zone
@@ -1653,11 +1695,19 @@ function beginDrag(taskId, event, handleEl) {
   const task = getTasks().find((t) => t.id === taskId);
   if (!task || task.deleted) return;
 
-  const otherSiblingIds = sortTasks(
-    getTasks().filter(
-      (t) => !t.deleted && t.id !== taskId && t.parentId === task.parentId && t.inInbox === task.inInbox
-    )
-  ).map((t) => t.id);
+  const siblingTasks = getTasks().filter(
+    (t) => !t.deleted && t.id !== taskId && t.parentId === task.parentId && t.inInbox === task.inInbox
+  );
+
+  // Step 16 (R3/R5): one Map<taskId, rank> for the whole drag, covering the
+  // dragged task itself plus every sibling — never rebuilt per pointermove.
+  // `otherSiblingIds` is now ordered by the same `(rank, order)` key
+  // sortTasks/compareSiblings render the list by, so array-position
+  // neighbour lookups in updateDragTarget below agree with what's actually
+  // on screen.
+  const rankMap = computeQuadrantRankMap([task, ...siblingTasks], getTagSettings());
+  const otherSiblingIds = sortTasks(siblingTasks, rankMap).map((t) => t.id);
+  const draggedRank = rankMap.get(taskId);
 
   // Step 11 (D4): snapshot the tree once for the whole drag. Full set —
   // deleted tasks included — see the `drag` doc comment above for why.
@@ -1670,6 +1720,8 @@ function beginDrag(taskId, event, handleEl) {
     parentId: task.parentId,
     inInbox: task.inInbox,
     otherSiblingIds,
+    rankMap,
+    draggedRank,
     tree,
     descendantIdSet,
     subtreeHeight,
@@ -1697,6 +1749,36 @@ function beginDrag(taskId, event, handleEl) {
 // caller already returns before this is ever reached for that case.
 function isValidReparentTarget(hoveredId) {
   return canReparent(drag.tree, drag.taskId, hoveredId, drag.subtreeHeight);
+}
+
+// Step 16 (R5): is the sibling gap bounded by `beforeId`/`afterId` (either
+// may be null — "top of the group" / "bottom of the group") one the dragged
+// task can actually SETTLE at, or does it cross a quadrant-rank boundary?
+//
+// The list renders sorted by `(rank, order)` (render.js's compareSiblings),
+// so after this drop's write, the dragged task's real neighbours will be
+// whichever siblings are adjacent to it under THAT key — not necessarily the
+// ones it was dropped between. Writing an `order` between two neighbours
+// only produces the visually-dropped position when the dragged task's own
+// rank is compatible with both of them: for the drop to actually land here,
+// `beforeId`'s rank (if any) must be <= the dragged task's rank, AND the
+// dragged task's rank must be <= `afterId`'s rank (if any) — i.e. the
+// dragged rank has to fall in the closed range the two neighbours bound.
+// A gap strictly INSIDE one rank's contiguous run has beforeRank === afterRank,
+// so this only accepts a dragged task of that exact rank, as R5 requires
+// ("free only within a contiguous run of same-rank siblings"). A gap
+// sitting exactly AT a rank-transition boundary (beforeRank < afterRank)
+// additionally accepts a dragged task whose rank equals EITHER bounding
+// rank — that position is still the true edge of the dragged task's own
+// run (its first or last slot), which is genuinely achievable, not merely
+// "close enough."
+function isSiblingGapFree(beforeId, afterId) {
+  const beforeRank = beforeId != null ? drag.rankMap.get(beforeId) : null;
+  const afterRank = afterId != null ? drag.rankMap.get(afterId) : null;
+  return (
+    (beforeRank == null || beforeRank <= drag.draggedRank) &&
+    (afterRank == null || drag.draggedRank <= afterRank)
+  );
 }
 
 // Re-evaluates the drop target on every pointermove. `document.elementFromPoint`
@@ -1738,9 +1820,16 @@ function updateDragTarget(event) {
     const beforeId = before ? (idx > 0 ? drag.otherSiblingIds[idx - 1] : null) : hoveredId;
     const afterId = before ? hoveredId : (idx < drag.otherSiblingIds.length - 1 ? drag.otherSiblingIds[idx + 1] : null);
 
-    drag.target = { type: "sibling", beforeId, afterId };
+    // Step 16 (R5): still a valid, droppable target either way (a
+    // priority-overruled gap is never REFUSED, only styled differently — see
+    // the `drag` doc comment's target entry) — `overruled` just tells
+    // showDropIndicator/finishDrag whether this exact gap crosses a
+    // quadrant-rank boundary.
+    const overruled = !isSiblingGapFree(beforeId, afterId);
+
+    drag.target = { type: "sibling", beforeId, afterId, overruled };
     hideReparentHighlight();
-    showDropIndicator(hoveredLi, before);
+    showDropIndicator(hoveredLi, before, overruled);
     return;
   }
 
@@ -1874,10 +1963,15 @@ async function performReparent(taskId, newParentId) {
     // rather than a second ordering rule: passing `prevTask: null` always
     // takes its "top" branch (nextTask.order - 1000, or 0 when the group is
     // empty), exactly D7's formula, and can never return `renumber: true`
-    // (that branch only ever fires between two non-null neighbours).
-    const newSiblings = sortTasks(
-      getTasks().filter((t) => !t.deleted && t.id !== taskId && t.parentId === newParentId)
-    );
+    // (that branch only ever fires between two non-null neighbours). Step 16:
+    // `sortTasks` now needs a rank Map to order by — built fresh here (this
+    // runs once per reparent, not per comparison) — but D7's own "top of
+    // group" formula is otherwise untouched: `order` is only ever this
+    // reparented task's tie-break within whichever rank it actually resolves
+    // to, never a claim about its final on-screen position.
+    const newSiblingsRaw = getTasks().filter((t) => !t.deleted && t.id !== taskId && t.parentId === newParentId);
+    const newSiblingsRankMap = computeQuadrantRankMap(newSiblingsRaw, getTagSettings());
+    const newSiblings = sortTasks(newSiblingsRaw, newSiblingsRankMap);
     const { order: newOrder } = computeReorderOrder(null, newSiblings.length > 0 ? newSiblings[0] : null);
 
     // Issue 7 fix: snapshotted ONCE before the loop, matching step 5/6/8's
@@ -1944,7 +2038,7 @@ function finishDrag() {
     return;
   }
 
-  const { beforeId, afterId } = target;
+  const { beforeId, afterId, overruled } = target;
 
   enqueueMutation(async () => {
     const userId = getCurrentUserId();
@@ -1956,12 +2050,14 @@ function finishDrag() {
     // app follows (see enqueueMutation's own comment in store.js). `beforeId`
     // /`afterId` are looked up by identity, not by their original array
     // index, so this still lands correctly even if something elsewhere
-    // shifted the group's exact order values in the meantime.
-    const currentSiblings = sortTasks(
-      getTasks().filter(
-        (t) => !t.deleted && t.id !== taskId && t.parentId === parentId && t.inInbox === currentTask.inInbox
-      )
+    // shifted the group's exact order values in the meantime. Step 16:
+    // `sortTasks` needs a rank Map now — built fresh here, once, not
+    // recomputed per comparison.
+    const currentSiblingsRaw = getTasks().filter(
+      (t) => !t.deleted && t.id !== taskId && t.parentId === parentId && t.inInbox === currentTask.inInbox
     );
+    const currentSiblingsRankMap = computeQuadrantRankMap(currentSiblingsRaw, getTagSettings());
+    const currentSiblings = sortTasks(currentSiblingsRaw, currentSiblingsRankMap);
     const prevTask = beforeId ? currentSiblings.find((t) => t.id === beforeId) ?? null : null;
     const nextTask = afterId ? currentSiblings.find((t) => t.id === afterId) ?? null : null;
 
@@ -1980,6 +2076,23 @@ function finishDrag() {
         }
       } else {
         await saveTask(userId, { ...currentTask, order: plan.order });
+      }
+
+      // Step 16 (R5): the write above ALWAYS lands, whether or not this drop
+      // crossed a quadrant-rank boundary (`overruled`, captured at hover time
+      // in updateDragTarget — see the `drag` doc comment's target entry) —
+      // manual order is never discarded, per the orchestrator's explicit
+      // instruction. What the spec forbids is a SILENT snap-back, so a drop
+      // that will not visually hold gets a message naming the quadrant whose
+      // priority overruled it — the dragged task's OWN resolved quadrant,
+      // since that's what actually governs where it settles regardless of
+      // which side of the boundary the drop crossed.
+      if (overruled) {
+        const quadrant = resolveTaskQuadrant(currentTask.title, getTagSettings());
+        const quadrantLabel = quadrant ? describeQuadrant(quadrant) : "unranked (no quadrant tag)";
+        alert(
+          `Priority order overruled this drop: this task is in the "${quadrantLabel}" quadrant, so it will settle among that group instead of the position you dropped it at. Your manual order was still saved, and takes effect the moment the tag mapping puts it in that same quadrant.`
+        );
       }
     } catch (error) {
       console.error("Failed to reorder task:", error);

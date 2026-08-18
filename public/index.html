@@ -313,6 +313,18 @@
       list-style: none;
       pointer-events: none;
     }
+    /* Step 16 (R5): this exact gap crosses a quadrant-rank boundary — still a
+       real, droppable target (the write still lands on release), but it will
+       NOT visually hold once priority order re-sorts the list. Styled with
+       the same orange product-spec.md's "make an overruled action visible"
+       language already uses for .task-item--reparent-target below, dashed
+       rather than solid so "will not hold" reads differently from the plain
+       blue line even at a glance, before the user ever releases. */
+    .drop-indicator--overruled {
+      background-color: transparent;
+      background-image: repeating-linear-gradient(90deg, #f59e0b 0 8px, transparent 8px 14px);
+      border-radius: 0;
+    }
     /* Step 11: the reparent target highlight. `drop-indicator` above marks an
        INSERTION POINT between two rows (a line); this marks a ROW ITSELF as
        "drop here to become my child" (D2's middle-50%-of-the-row zone), so it

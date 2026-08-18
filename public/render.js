@@ -82,12 +82,16 @@ import {
   resolveTagColor,
   // Step 15 (Quadrant mapping): a SEPARATE resolver from resolveTagColor above
   // — see tagColors.js's own comment on why these two must never be
-  // conflated. describeQuadrant/quadrantBadgeText only ever feed the task-row
-  // badge (Q6); ordering itself (quadrantRank) is step 16's seam, unused here.
+  // conflated. describeQuadrant/quadrantBadgeText feed the task-row badge
+  // (Q6). Step 16 (Priority ordering) is the first thing in this file to
+  // consume `quadrantRank`/`computeQuadrantRankMap` — see compareSiblings and
+  // renderTasks below.
   readTagQuadrant,
   resolveTaskQuadrant,
   describeQuadrant,
   quadrantBadgeText,
+  quadrantRank,
+  computeQuadrantRankMap,
   QUADRANT_OPTIONS,
 } from "./tagColors.js";
 
@@ -95,20 +99,42 @@ const entriesByTaskId = new Map();
 const focusEntriesByTaskId = new Map();
 const overdueEntriesByTaskId = new Map();
 
-// The sibling comparator — orders tasks that share the same parent. This is
-// the exact seam step 16 replaces with the quadrant-first comparator. It
-// must stay this one small function so that swap never has to touch the
-// tree-walking logic in flattenTree below.
-function compareSiblings(a, b) {
+// Step 16 (Priority ordering, R3): the fallback rank for a task this
+// comparator's caller somehow forgot to include in its rank Map — should
+// never happen (every caller below builds its Map from the exact same task
+// set it's about to sort), but reads identically to a genuinely unranked
+// task rather than throwing or sorting as if it were rank 0.
+const UNRANKED_RANK = quadrantRank(null);
+
+// The sibling comparator — orders tasks that share the same parent.
+// Step 16 (R1/R2/R3): the sort key is now `(quadrantRank, order)` — quadrant
+// rank first, `order` (step 1's fractional index) as the tie-breaker, exactly
+// the formula step 1's own Decisions entry locked ahead of time. `rankMap` is
+// a `Map<taskId, rank>` the CALLER built once for the whole render/drag pass
+// (tagColors.js's `computeQuadrantRankMap`) — this function only ever does a
+// `Map.get`, never calls `resolveTaskQuadrant`/`quadrantRank` itself, which
+// would re-parse every title on every one of an O(n log n) sort's
+// comparisons instead of once per task. This only ever compares tasks that
+// share a parent (siblings) — the tree shape itself (which tasks even ARE
+// siblings) is buildTree's job upstream and is completely untouched, so
+// hierarchy always outranks priority: a rank-0 child can never sort above
+// its own parent, only among its own siblings.
+function compareSiblings(a, b, rankMap) {
+  const rankA = rankMap.get(a.id) ?? UNRANKED_RANK;
+  const rankB = rankMap.get(b.id) ?? UNRANKED_RANK;
+  if (rankA !== rankB) return rankA - rankB;
   return a.order - b.order;
 }
 
-// Flat ascending sort by `order`, ignoring hierarchy. Kept as a small public
-// utility (nothing else in this codebase calls it yet) built on the same
-// comparator flattenTree uses, so there is exactly one sibling-ordering rule
-// regardless of which of the two callers asks for it.
-export function sortTasks(tasks) {
-  return [...tasks].sort(compareSiblings);
+// Flat ascending sort by `(quadrantRank, order)`. Kept as a small public
+// utility built on the same comparator flattenTree uses, so there is exactly
+// one sibling-ordering rule regardless of which of the two callers asks for
+// it. `rankMap` defaults to an empty Map (every lookup misses, so every task
+// reads as UNRANKED_RANK and this degrades to a plain `order` sort) purely as
+// a defensive fallback for a caller that hasn't been updated — every real
+// caller in this codebase passes a Map built by computeQuadrantRankMap.
+export function sortTasks(tasks, rankMap = new Map()) {
+  return [...tasks].sort((a, b) => compareSiblings(a, b, rankMap));
 }
 
 // Depth-first flatten over the FULL task set (`allTasks` — everything not
@@ -141,12 +167,16 @@ function closeAnyOpenEdits(entry, id, onEditCancelled, fieldSuffix = "") {
   if (entry.editingDueDate) onEditCancelled(id, "dueDate" + fieldSuffix);
 }
 
-function flattenTree(allTasks, visibleIds) {
+// Step 16: `rankMap` threads through to compareSiblings at every level of the
+// walk — a node's children are sorted by the identical (rank, order) rule
+// its own siblings were, so priority ordering applies at every depth of the
+// tree, not just the roots. Same empty-Map default/reasoning as sortTasks.
+function flattenTree(allTasks, visibleIds, rankMap = new Map()) {
   const tree = buildTree(allTasks);
   const result = [];
 
   function visit(nodes) {
-    for (const node of [...nodes].sort(compareSiblings)) {
+    for (const node of [...nodes].sort((a, b) => compareSiblings(a, b, rankMap))) {
       if (visibleIds.has(node.id)) {
         result.push({ task: node, depth: depthOf(tree, node.id) });
       }
@@ -277,7 +307,15 @@ export function computeAgeLabel(createdAt, now = new Date()) {
 // renderTasks itself below now calls this too, so there is exactly one
 // implementation regardless of caller, per this step's own D5 instruction
 // not to invent a second ordering mechanism.
-export function computeMainListOrderIndex(nonDeletedTasks) {
+// Step 16 (R4): `rankMap` is a `Map<taskId, rank>` the caller built ONCE for
+// its whole render pass (renderTasks below already has one; app.js's
+// renderOverdueView builds its own the same way via
+// computeQuadrantRankMap) — never recomputed in here, so Focus and Overdue
+// inherit quadrant-first ordering automatically through the exact same
+// `flattenTree` call this function already made before step 16 existed, with
+// zero new ordering rule of their own (R4's "Focus/Overdue carry no ordering
+// of their own to maintain").
+export function computeMainListOrderIndex(nonDeletedTasks, rankMap = new Map()) {
   const orderIndex = new Map();
   const groups = [
     nonDeletedTasks.filter((task) => task.inInbox),
@@ -285,7 +323,7 @@ export function computeMainListOrderIndex(nonDeletedTasks) {
   ];
   for (const tasks of groups) {
     const visibleIds = new Set(tasks.map((task) => task.id));
-    for (const { task } of flattenTree(tasks, visibleIds)) {
+    for (const { task } of flattenTree(tasks, visibleIds, rankMap)) {
       if (!orderIndex.has(task.id)) orderIndex.set(task.id, orderIndex.size);
     }
   }
@@ -331,8 +369,17 @@ export function computeMainListOrderIndex(nonDeletedTasks) {
 // color" (product-spec.md §4) need no special re-color step at all.
 export function renderTasks(containers, focusContainer, onEditCancelled, tagSettings) {
   const seenIds = new Set();
+
+  // Step 16 (R3): exactly ONE Map<taskId, rank> for this whole render pass —
+  // built once here from every task in every tree container (Focus never
+  // needs its own: R4/D3's `mainListOrderIndex` below already reuses this
+  // same flattened output, which was itself sorted using this Map). Threaded
+  // into every flattenTree/computeMainListOrderIndex call below instead of
+  // letting any of them re-derive it, which is what R3 exists to forbid.
+  const rankMap = computeQuadrantRankMap(containers.flatMap(({ tasks }) => tasks), tagSettings);
+
   const perContainer = containers.map(({ element, tasks, visibleIds }) => {
-    const flattened = flattenTree(tasks, visibleIds);
+    const flattened = flattenTree(tasks, visibleIds, rankMap);
     for (const { task } of flattened) seenIds.add(task.id);
     return { element, flattened };
   });
@@ -349,7 +396,7 @@ export function renderTasks(containers, focusContainer, onEditCancelled, tagSett
   // containers are walked in the exact [Inbox, main list] sequence app.js
   // always passes them in, so a pinned Inbox task and a pinned main-list
   // task still land in one single, well-defined relative order.
-  const mainListOrderIndex = computeMainListOrderIndex(containers.flatMap(({ tasks }) => tasks));
+  const mainListOrderIndex = computeMainListOrderIndex(containers.flatMap(({ tasks }) => tasks), rankMap);
   const focusTasks = focusContainer
     ? [...focusContainer.tasks].sort(
         (a, b) =>

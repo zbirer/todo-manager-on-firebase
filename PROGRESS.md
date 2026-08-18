@@ -1,8 +1,8 @@
 # Progress
 
-Last updated: 2026-08-18 — **Steps 1–15 implemented.** Step 16 (Priority
-ordering) is next. No signed-in browser walkthrough has been reported back for
-any step yet — the click-path below is still the first thing to run.
+Last updated: 2026-08-18 — **Steps 1–16 implemented.** Step 17 (Tag
+rename/delete) is next. No signed-in browser walkthrough has been reported
+back for any step yet — the click-path below is still the first thing to run.
 
 ## Step table
 
@@ -23,74 +23,110 @@ any step yet — the click-path below is still the first thing to run.
 | 13 | Dates | done |
 | 14 | Tag colors | done |
 | 15 | Quadrant mapping | done |
-| 16 | Priority ordering | next |
-| 17 | Tag rename/delete | planned |
+| 16 | Priority ordering | done |
+| 17 | Tag rename/delete | next |
 | 18 | Recurrence | planned |
 | 19 | Search — basic | planned |
 | 20 | Search — advanced | planned |
 | 21 | Export / import | planned |
 
-## Resume here — step 16 (Priority ordering)
+## Step 16 (Priority ordering) — done
 
-**Exact next action:** implement step 16, per product-spec.md §3 ("List
-Order", lines 97-107) and §7 ("Recommended Order", lines 214-219). Step 15
-built every piece step 16 consumes — a task's quadrant is already computable
-(`resolveTaskQuadrant`, tagColors.js) and already ranked
-(`quadrantRank`, tagColors.js, 0 = urgent+important … 4 = unranked). Nothing
-about either needs redesigning; this step is purely about wiring them into
-the one seam left for it.
+Implemented exactly per the orchestrator's locked decisions (R1–R6, see the
+Decisions log's step 16 entries below) — quadrant rank is never stored,
+computed once per render/drag pass into a `Map<taskId, rank>`
+(`computeQuadrantRankMap`, tagColors.js), and `compareSiblings`
+(render.js) sorts siblings by `(rank, order)`, unchanged for cross-parent
+comparisons (hierarchy still wins — a ranked child never floats above its
+own parent). The overruled-drag visibility requirement (product-spec.md
+§3:104-107) is live: a sibling drop gap that crosses a quadrant-rank
+boundary renders with `.drop-indicator--overruled` (index.html) *before*
+release, and the drop still writes `order` and alerts naming the dragged
+task's own resolved quadrant, per R5's explicit "write, never refuse, never
+silently snap back."
 
-- **The seam is `compareSiblings` (render.js), and it is the ONLY thing this
-  step changes about ordering.** Today: `(a, b) => a.order - b.order`. It
-  becomes a two-key comparator: **quadrant rank first, `order` second** —
-  `quadrantRank(resolveTaskQuadrant(a.title, tagSettings)) -
-  quadrantRank(resolveTaskQuadrant(b.title, tagSettings))`, falling back to
-  `a.order - b.order` on a tie. This is exactly what step 1's Decisions log
-  already locked ahead of time: *"`order` is a fractional index scoped to
-  `parentId` siblings, and is always the tie-breaker applied *after*
-  quadrant rank once step 16 lands (`(quadrantRank, order)`, computed
-  client-side on every render, never stored)."* Do not invent a different
-  formula — that decision already picked one.
-- **`compareSiblings` doesn't currently take `tagSettings`.** It's called from
-  `flattenTree` (render.js), which is called from `renderTasks` (which already
-  receives `tagSettings` as a parameter, step 14) — so `tagSettings` has to
-  thread one level further down than it does today: `flattenTree(tree,
-  tagSettings)` → `compareSiblings(a, b, tagSettings)`. Every call site of
-  `flattenTree`/`compareSiblings` inside render.js needs that same parameter
-  added; there should be no second, independent sibling comparator anywhere
-  else (Focus and Overdue already sort via this same seam per steps 12/13's
-  Decisions — issue 1's fix and D5 — so they inherit quadrant-first ordering
-  automatically the moment this lands, not as separate work).
-- **The overruled-drag visibility requirement is this step's UI half, not
-  optional polish** (product-spec.md:104-107): *"a drag can be overruled.
-  Dragging a low-priority task above a high-priority one will not hold,
-  because priority is applied first... the interface should make that
-  visible rather than letting a drag appear to work and then snap back."*
-  Step 10's own Decisions entry already applied this exact principle to a
-  same-drag invalid target (no indicator at all, rather than indicator-then-
-  revert) — step 16 needs the equivalent for a *priority*-overruled drop: if
-  a manual reorder would place a task on the wrong side of a quadrant-rank
-  boundary, the drop must not silently snap back with no explanation. Decide
-  the concrete mechanism when building this (a disabled/refused drop
-  indicator segment at a rank boundary is the most direct reading of "make it
-  visible," but this is not yet locked — record whatever is chosen as a new
-  Decision, don't leave it implicit).
-- **Manual order still survives — it's the tie-breaker, not overridden.**
-  Step 10/11's drag machinery, `computeReorderOrder`, and the fractional-index
-  precision-renumber guard are all unchanged; this step only changes what
-  *sorts before* comparing `order`, never how `order` itself is computed or
-  written.
-- **Nothing about step 15's storage or resolution changes.** `quadrantRank`
-  and `resolveTaskQuadrant` (tagColors.js) are already exported specifically
-  so this step only imports them — do not re-derive urgency/importance here.
+## Resume here — step 17 (Tag rename/delete)
 
-**Files likely touched:** `public/render.js` (`compareSiblings` grows a
-`tagSettings` parameter and the two-key comparison; `flattenTree` and every
-caller thread it through), `public/app.js` (the drag-target validity check
-gains a priority-boundary case if that's the chosen visibility mechanism).
-No change expected to `public/tagColors.js` (step 15 already exports
-everything this step needs), `firestore.rules`, or
-`firestore.indexes.json`.
+**Exact next action:** implement step 17, per product-spec.md §7's last
+bullet ("Renaming & Deleting Tags Propagates," lines 226–234). Tags live
+*inside task titles* (step 2's decision, never a separate field) — renaming
+or deleting a tag on the settings screen (`public/index.html`'s
+`#settings-view`, `render.js`'s `renderSettings`/`createSettingsElement`)
+means **rewriting the title text of every non-deleted task that carries that
+exact tag token**, not touching a registry that lives independently of the
+tasks. This is the first step whose one user action fans out into an
+unbounded number of task document writes, and the first to require an
+"undo" the app has never needed before.
+
+- **Matching a tag token.** Use `tagColors.js`'s existing `TAG_PATTERN`
+  (`/([#@]\w+)/g`, tagColors.js:20) / `parseTags` (tagColors.js:43) — the one
+  place that already decides what counts as a tag (step 2's decision, step
+  14's D11 restated). Do not write a second regex: renaming `#p1` must not
+  also match inside `#p10`, and `parseTags`'s word-boundary behavior
+  (`\w+`) already gets this right for free.
+- **The 1000-char pre-check and abort-whole-batch rule (locked by the
+  orchestrator ahead of this step — do not re-litigate):** replacing a short
+  tag name with a longer one can push a title past `TITLE_MAX_LENGTH`
+  (app.js:105, currently `1000` — the same cap step 2's inline title editor
+  already enforces at app.js:1071-1072/1422-1423). Before writing **any**
+  task, compute every affected task's new title and check **all of them**
+  against the cap first. If even ONE would exceed it, **abort the entire
+  rename with no writes at all** — never rename most tasks and silently skip
+  the ones that would overflow. A partial rename is worse than useless here:
+  the tag would end up split across two spellings in the live task set with
+  no indication anything went wrong, and product-spec.md's own "confirmed
+  before it runs and can be undone afterwards" framing only makes sense for
+  an all-or-nothing action. Deleting a tag (stripping the token out of the
+  title) can only ever shorten a title, so the same pre-check is a no-op for
+  delete — reuse one shared pre-check function for both anyway, don't write
+  a second one that only handles rename.
+- **The batch write itself.** One `enqueueMutation` call whose body loops
+  over every affected task and writes each with a plain per-document
+  `saveTask(uid, {...task, title: newTitle})` — the exact shape step 8's
+  cascade delete and step 11's reparent already established for "one user
+  action, many whole-document writes, one queued mutation, one `finally {
+  refreshTasks() }`" (see either step's Decisions entries). There is no
+  Firestore transaction anywhere in this codebase and no reason to introduce
+  one here — the pre-check above is what stands in for atomicity, not a
+  database transaction.
+- **The settings-map side of a rename/delete.** `tagSettings.tags` (step 14's
+  D1 shape, `{ [tagName]: { fg, bg, quadrant } }`) is keyed by the OLD tag
+  name — a rename must move that entry to the NEW key (carrying `fg`/`bg`/
+  `quadrant` across untouched, the same "spread the existing entry" pattern
+  `handleTagColorChange`/`handleTagQuadrantChange` already use), and a delete
+  must remove the key outright. This is the step step 14's D13 explicitly
+  deferred to: "Clear colors" (step 14) leaves an empty `{}` entry behind on
+  purpose because *that* action isn't "remove this tag," but step 17's
+  delete genuinely is — do not reuse `handleTagClearColors` for this.
+- **"Confirmed before it runs."** A `confirm()` naming the tag and the
+  affected task count, matching every existing destructive-action precedent
+  in this app (step 3/8/9's delete confirms, all of which name a concrete
+  count rather than a generic warning).
+- **"Can be undone afterwards" — genuinely unresolved, not a wiring task.**
+  This codebase has no undo/history mechanism anywhere today. Before writing
+  any code, decide and RECORD (as a new Decision, not left implicit) what
+  "undo" means here: e.g. a session-lifetime-only "Undo" affordance that
+  simply re-runs the inverse rename/re-insertion using an in-memory snapshot
+  taken right before the batch write (cheap, matches this app's "everything
+  refetches from Firestore, nothing is durable client state" architecture,
+  but does not survive a reload) versus something durable (out of scope
+  without a real design pass — this app has no operation log). Do not build
+  a general-purpose undo stack for the whole app; scope it to exactly this
+  one action, and say so explicitly in the Decision that locks it in.
+- **Tags inside a task's `note` field never match.** product-spec.md §4 is
+  explicit that "the note never carries tags" — the rename/delete sweep
+  scans `task.title` only, never `task.note`, even if a user happens to type
+  `#something`-shaped text into a note.
+
+**Files likely touched:** `public/app.js` (the batch rename/delete handler,
+the pre-check, the settings-map key move, the confirm dialog, and whatever
+the recorded undo decision requires), `public/render.js`/`index.html` (a
+Rename/Delete affordance on each settings row, alongside the existing
+Text/Background/Quadrant/Clear-colors controls). No change expected to
+`public/taskService.js`, `firestore.rules`, or `firestore.indexes.json` —
+`isValidTask()`'s title cap is already enforced client-side by the pre-check
+above, and every write is still a whole-document `saveTask` no different in
+shape from every other mutation in this app.
 
 **No step has been confirmed in a signed-in browser yet.** Everything below marked
 "verified" was verified unsigned-in, by driving the real modules with synthetic
@@ -2119,6 +2155,128 @@ driving the real modules directly):**
   step 14 (D6) and constrains only `weekStart`'s value and `tags`'s
   type/key-count, never entry shape — a `quadrant` key inside an entry passes
   exactly as `fg`/`bg` do. `weekStart` remains unwritten (step 20's field).
+
+- **step 16 (R1, sort scope — locked by the orchestrator, not re-litigated)**
+  — the sort key is `(quadrantRank, order)`, applied ONLY within one sibling
+  group (same `parentId`), never as a global flat sort. Hierarchy outranks
+  priority absolutely: `compareSiblings` (render.js) is called exclusively
+  from within `flattenTree`'s per-node `[...nodes].sort(...)` — `nodes` is
+  always one parent's own `children` array (or `tree.roots`) — so a rank-0
+  child can mathematically never be compared against, let alone sort above,
+  its own parent or an unrelated task at a different depth. Verified live: a
+  synthetic rank-0 child of a rank-3 root, rendered alongside a rank-0 root
+  sibling of that parent, produced `[Root2(rank0), Parent(rank3), Child(rank0
+  child of Parent)]` — Child stayed immediately after Parent (its true
+  tree position), never promoted to the top despite outranking Parent.
+- **step 16 (R2/R3, rank is never stored, computed once per pass)** — a
+  task's rank is resolved fresh from `resolveTaskQuadrant(task.title,
+  tagSettings)` + `quadrantRank(...)` on every render/drag setup, never
+  written to a document (storing it would go stale the instant a tag mapping
+  changes, with no write touching the affected tasks). The one shared builder
+  is `computeQuadrantRankMap(tasks, tagSettings)` (tagColors.js) — it returns
+  a `Map<taskId, rank>` computed with exactly one pass over `tasks` (one
+  `resolveTaskQuadrant` call per task), and every consumer calls it ONCE per
+  render/drag pass rather than the comparator calling it per comparison:
+  `renderTasks` (render.js) builds one Map covering every task in every tree
+  container and threads it through `flattenTree`→`compareSiblings` and into
+  `computeMainListOrderIndex`; `app.js`'s `renderOverdueView` builds its own
+  the same way; the drag machinery (`beginDrag`) builds one at drag START
+  (covering the dragged task + its siblings) and reads from it for the whole
+  gesture — `updateDragTarget` (called on every `pointermove`) never touches
+  `resolveTaskQuadrant`, only `Map.get`. `compareSiblings` itself takes the
+  Map as a parameter and only ever calls `.get` — the "factory closing over
+  the map" R3 asked for, implemented as a plain extra argument instead, which
+  is equivalent and needed no new closure machinery. `firestore.indexes.json`
+  stays `[]` — every sort is client-side, as it always was.
+- **step 16 (R1 secondary key unchanged)** — `order`'s existing role (step
+  1's fractional index, scoped per sibling group, computed by
+  `computeReorderOrder`/the precision-renumber guard, all untouched) is
+  still the tie-breaker whenever two siblings share a rank. Verified: three
+  tasks tied on `#p1` (rank 1) with orders `100/200/300` sorted strictly by
+  that order (`Y(100), Z(200), X(300)`); a mixed set of six tasks across
+  five different ranks (0/1/2/3/4, with two tied at rank 0 on orders
+  `50/9999`) sorted `[rank0-low-order, rank0-high-order, rank1, rank2,
+  rank3, unranked]` exactly.
+- **step 16 (R4, Focus/Overdue inherit for free — no ordering rule of their
+  own)** — `computeMainListOrderIndex` (render.js) grew a `rankMap`
+  parameter (was previously un-parameterized, comparing raw `order` across
+  groups per its own pre-step-16 docstring) and threads it into the same
+  `flattenTree` call it already made; nothing about `renderMainView`'s Focus
+  wiring (app.js) or `renderOverdue`'s Overdue wiring needed to change at
+  all — they already fed this function's output through unmodified. Verified
+  live: pinning three tasks spread across four differently-ranked roots
+  (including one pinned child nested under a pinned low-rank parent)
+  produced a Focus list order that was byte-for-byte the pinned subset of
+  the main list's real DOM order; separately, marking two of those same
+  tasks overdue produced an Overdue screen order that was the overdue subset
+  of that identical main-list order.
+- **step 16 (R5, the overruled drag — this step's own recorded mechanism,
+  spec silent on the concrete UI)** — a sibling drop gap is "free" (the
+  dragged task will actually settle exactly where dropped) iff the dragged
+  task's own rank falls in the CLOSED numeric range bounded by its two
+  prospective neighbours' ranks: `(beforeRank == null || beforeRank <=
+  draggedRank) && (afterRank == null || draggedRank <= afterRank)`
+  (`isSiblingGapFree`, app.js). This is stricter than "both neighbours must
+  share the dragged task's exact rank" and deliberately so: it correctly
+  treats the EDGE of the dragged task's own contiguous rank-run as free too
+  (e.g. dropping a rank-2 task immediately after the last rank-1 item and
+  before the first other rank-2 item is achievable, even though the
+  "before" neighbour is a different rank) — proven by direct before/after
+  simulation of the exact `order` value `computeReorderOrder` would write
+  for that drop, then re-rendering and confirming the task really does land
+  there. A gap that fails the check gets `.drop-indicator--overruled`
+  (index.html — a dashed orange line, reusing the same orange
+  `.task-item--reparent-target` already uses for "this is a different kind
+  of target," per this file's existing visual language) INSTEAD of the
+  plain blue line, shown DURING the hover, before release — verified live
+  with real `pointerdown`/`pointermove` `PointerEvent`s and real
+  `getBoundingClientRect()` geometry against actual rendered rows (four
+  boundary cases: strictly inside a foreign block, at the very top of the
+  whole list, at the very bottom, and at the edge of the dragged task's own
+  run) — all four matched the formula's prediction exactly. **The drop is
+  never refused** — `drag.target` stays non-`null` and `overruled: true`
+  rides along on it; `finishDrag` writes `order` through the exact same
+  `computeReorderOrder`/precision-renumber path as any other drop, with NO
+  special-casing of the write itself (per the orchestrator's explicit "do
+  not discard the write, do not refuse the drop"). AFTER a successful
+  overruled write, `finishDrag` `alert()`s, naming the DRAGGED TASK'S OWN
+  resolved quadrant (via `resolveTaskQuadrant`/`describeQuadrant`,
+  freshly re-resolved from the just-re-read `currentTask`, never the
+  drag-time snapshot) as the thing that overruled the drop — chosen over
+  naming whichever neighbour's rank technically triggered the failure
+  because the dragged task's own rank is what actually governs where it
+  will really settle regardless of which side of the boundary the drop
+  crossed, so it's the one description that's always correct in both
+  directions (spec's own example: a low-priority task dragged above a
+  high-priority one, and the symmetric case of a high-priority task dragged
+  below a low-priority one). Proven two ways: (a) live in the browser, that
+  a REAL drag-and-release through both a free gap and an overruled gap
+  completes with no console error and correctly clears the indicator either
+  way; (b) by directly simulating the exact `order` value the write would
+  produce for a free top-of-list drop versus an overruled bottom-of-list
+  drop and re-rendering — the free drop's task genuinely moved to the top
+  (`[B,A,C,D]`), while the overruled drop's task, despite writing a real,
+  distinct `order` value 3000 higher than before, did NOT move at all after
+  re-render (`[A,B,C,D]`, unchanged) — concretely demonstrating "the write
+  lands, the position does not hold" rather than merely asserting it. The
+  literal `alert()` call itself could not be driven end-to-end without
+  signing in (it sits behind `enqueueMutation`'s existing `if (!userId)
+  return` guard, unsigned-in-unreachable for the identical reason step 11's
+  D8/issue-5 write-time alerts already are — see those Decisions entries),
+  so the exact wording is verified by reading the source, not by observing
+  the dialog fire.
+- **step 16 (R6, no regression to step 15)** — `resolveTaskQuadrant`,
+  `quadrantRank`, the settings screen's quadrant `<select>`, and the
+  task-row badge are byte-for-byte untouched; `git diff` against step 15's
+  landed commit touches only `compareSiblings`/`sortTasks`/`flattenTree`/
+  `computeMainListOrderIndex`/`renderTasks` (render.js), the drag machinery
+  plus `renderOverdueView` (app.js), one new export
+  (`computeQuadrantRankMap`, tagColors.js), and one new CSS rule
+  (`.drop-indicator--overruled`, index.html).
+- **step 16 (not really a decision) — no change to `firestore.rules` or
+  `firestore.indexes.json`.** Every sort is client-side and rank is never
+  stored (R2), so nothing about the schema or its validation needed to
+  change; `firestore.indexes.json` stays the empty array it always was.
 
 ## Open items (not steps)
 

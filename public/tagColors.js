@@ -292,3 +292,25 @@ const UNRANKED_RANK = 4;
 export function quadrantRank(quadrant) {
   return quadrant == null ? UNRANKED_RANK : QUADRANT_RANK[quadrant] ?? UNRANKED_RANK;
 }
+
+// --- Priority ordering (step 16) ---------------------------------------------
+// R2/R3 (locked by the orchestrator): a task's rank is NEVER stored — it's
+// recomputed from the title + tag settings on every render, exactly like
+// resolveTagColor/resolveTaskQuadrant above, so an edited tag mapping can
+// never leave a stale rank sitting on a document with no write having
+// touched it. R3 forbids calling resolveTaskQuadrant/quadrantRank from
+// inside a sort comparator (that would re-parse every title on every one of
+// an O(n log n) sort's comparisons) — this is the one shared helper every
+// caller builds ONCE per render/drag pass instead: render.js's
+// compareSiblings/flattenTree/computeMainListOrderIndex read from the Map
+// this returns, and app.js's drag machinery
+// (beginDrag/updateDragTarget/finishDrag/performReparent) builds its own
+// once per gesture for the identical reason — never inside a pointermove
+// handler.
+export function computeQuadrantRankMap(tasks, tagSettings) {
+  const rankMap = new Map();
+  for (const task of tasks) {
+    rankMap.set(task.id, quadrantRank(resolveTaskQuadrant(task.title, tagSettings)));
+  }
+  return rankMap;
+}

@@ -534,6 +534,28 @@ function createTaskElement(taskId) {
   const li = document.createElement("li");
   li.dataset.taskId = taskId;
 
+  // Step 22: the "⋯" affordance — a real <button>, FIRST child of the row
+  // (ahead of the drag handle), so it opens the exact same context menu
+  // step 8 built for long-press/right-click, just reachable with a plain
+  // click/tap and from the keyboard too (a native <button> is focusable and
+  // Enter/Space-activatable for free — no tabindex/keydown wiring needed).
+  // `aria-haspopup="menu"` names what clicking it opens; index.html's
+  // hover-reveal CSS is what keeps it out of the way until hovered/focused.
+  // app.js's delegated click listener on #task-section wires the actual
+  // click (event delegation — no per-element listener here, same rule every
+  // other row control in this function follows), and its pointerdown
+  // handler excludes this button from both drag-start and the long-press-
+  // arms-menu timer, the same way it already excludes the drag handle just
+  // below — without that exclusion a slow press on this button would race
+  // its own click handler toward opening the same menu twice.
+  const menuBtn = document.createElement("button");
+  menuBtn.type = "button";
+  menuBtn.className = "task-item__menu-btn";
+  menuBtn.setAttribute("aria-label", "Task actions");
+  menuBtn.setAttribute("aria-haspopup", "menu");
+  menuBtn.textContent = "⋯";
+  li.appendChild(menuBtn);
+
   // Step 10: a dedicated drag handle, never the whole row. The row already
   // owns click-to-edit (step 2) and long-press-opens-menu (step 8); hijacking
   // the whole row for dragging too would fight both of those gestures, since
@@ -634,37 +656,9 @@ function createTaskElement(taskId) {
   recurrenceBadge.style.display = "none";
   meta.appendChild(recurrenceBadge);
 
-  // Every per-row action button lives in one wrapper (see index.html's
-  // .task-item__actions) so the group is pushed right as a whole regardless
-  // of which individual buttons are visible for this task.
-  const actions = document.createElement("div");
-  actions.className = "task-item__actions";
-  li.appendChild(actions);
-
-  // Step 4: add a subtask under this task. Step 8 added a right-click/
-  // long-press context menu with the same command, but this inline button
-  // stays too — the spec's task menu is an additional way to reach these
-  // actions, not a replacement for the always-visible per-row buttons.
-  const addSubtaskButton = document.createElement("button");
-  addSubtaskButton.type = "button";
-  addSubtaskButton.className = "task-item__add-subtask-btn";
-  addSubtaskButton.textContent = "+ Subtask";
-  addSubtaskButton.setAttribute("aria-label", "Add subtask");
-  actions.appendChild(addSubtaskButton);
-
-  // Step 3: delete a task (leaf-only refusal at the time). Step 8 turned
-  // this into a cascade delete and added the context menu's own Delete item
-  // routing to the same handler — this inline button is unchanged and stays
-  // alongside it.
-  const deleteButton = document.createElement("button");
-  deleteButton.type = "button";
-  deleteButton.className = "task-item__delete-btn";
-  deleteButton.textContent = "Delete";
-  deleteButton.setAttribute("aria-label", "Delete task");
-  actions.appendChild(deleteButton);
-
   return {
     li,
+    menuBtn,
     dragHandle,
     checkbox,
     label,
@@ -676,8 +670,6 @@ function createTaskElement(taskId) {
     ageDisplay,
     quadrantBadge,
     recurrenceBadge,
-    addSubtaskButton,
-    deleteButton,
     editingTitle: false,
     editingNote: false,
     editingDueDate: false,
@@ -695,7 +687,7 @@ function createTaskElement(taskId) {
 // call site (search is out of scope for the Overdue screen — S19-6) needs no
 // change at all; only renderTasks below ever passes a real value.
 function updateTaskElement(entry, task, depth, tagSettings, isSearchContext = false) {
-  const { li, checkbox, label, titleInput, noteDisplay, noteInput, addSubtaskButton } = entry;
+  const { li, checkbox, label, titleInput, noteDisplay, noteInput } = entry;
 
   entry.task = task;
 
@@ -724,21 +716,6 @@ function updateTaskElement(entry, task, depth, tagSettings, isSearchContext = fa
   li.style.setProperty("--depth", depth ?? 0);
 
   checkbox.checked = !!task.completed;
-
-  // Fix: disable rather than let the click-time alert (app.js's
-  // handleAddSubtaskClick) be the only thing standing between the user and a
-  // refused add — the 7-level cap is `ancestors.size() <= 6`
-  // (firestore.rules:56), so a task already carrying 6 ancestors has nowhere
-  // deeper to put a child. Deliberately `task.ancestors.length`, NOT the
-  // `depth` parameter above: `depth` is hardcoded to 0 for every Focus/
-  // Overdue row (D2/D4 — those views render flat, no indentation), which
-  // would make a deeply-nested pinned or overdue task's button read as
-  // "shallow" no matter how deep it actually sits. `ancestors` is the one
-  // depth signal that stays correct in all three row contexts a task can
-  // render in. This is a UI hint only — handleAddSubtaskClick's own re-check
-  // against a fresh tree at click time (and again inside the queued
-  // mutation) remains the actual guard.
-  addSubtaskButton.disabled = (task.ancestors?.length ?? 0) >= 6;
 
   // Title display/input only get synced from `task` while this row isn't
   // mid-edit. An open title edit holds text the user hasn't saved yet, and a
@@ -1117,7 +1094,7 @@ export function renderTrash(container, tasks) {
 
 // The Restore button carries no listener of its own — same event-delegation
 // rule as every other per-row button in this app (see the main list's
-// addSubtaskButton/deleteButton above). app.js's delegated
+// menuBtn above). app.js's delegated
 // click listener on #task-section recognizes `.trash-item__restore-btn` and
 // dispatches to its own restore handler.
 function createTrashElement(taskId) {

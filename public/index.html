@@ -215,27 +215,45 @@
       font-weight: 600;
       background-color: rgba(255, 255, 255, 0.25);
     }
-    /* All per-row action buttons live in one wrapper so pushing the whole
-       group to the right (margin-left: auto) never depends on which
-       individual buttons happen to be visible — render.js can toggle buttons
-       inside this wrapper independently without CSS having to know which one
-       is "first". */
-    .task-item__actions {
-      display: flex;
-      gap: 6px;
-      margin-left: auto;
-    }
-    /* Always-visible per-row actions. Step 8 added a right-click/long-press
-       context menu (.task-menu below) that reaches the same commands, but
-       these inline buttons stay too — the menu is an additional way in, not
-       a replacement for them. */
-    .task-item__add-subtask-btn,
-    .task-item__delete-btn {
-      padding: 4px 10px;
-      font-size: 12px;
-      font-weight: 500;
-      background-color: rgba(0, 0, 0, 0.25);
+    /* Step 22: the "⋯" affordance — a real <button>, not a span, so it is
+       natively focusable/keyboard-activatable rather than needing its own
+       tabindex/role/keydown handling. Base look mirrors the drag handle
+       below (transparent background, inherited row color, similar font-size/
+       padding) since the two sit side by side and read as one family of
+       compact row-level icon buttons. Replaces the old always-visible
+       "+ Subtask"/"Delete" per-row buttons this step removes — every action
+       they offered now lives in the one context menu below, reached through
+       this single affordance instead of two dedicated buttons. */
+    .task-item__menu-btn {
+      background: none;
+      border: none;
       color: inherit;
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      padding: 0 4px;
+    }
+    /* Hidden by default, revealed on hover — the first hover-reveal pattern
+       in this file. `opacity`, never `display: none`: toggling display would
+       reflow the row (every element to its right shifting by the button's
+       width) the instant the mouse arrives, which a mere hover should never
+       do. Scoped to `(hover: hover)` so a touch device — which has no hover
+       state to reveal it FROM — instead shows it unconditionally; there is
+       no gesture on such a device that would ever flip opacity back to 1
+       otherwise. */
+    @media (hover: hover) {
+      .task-item__menu-btn {
+        opacity: 0;
+      }
+      li.task-item:hover .task-item__menu-btn {
+        opacity: 1;
+      }
+    }
+    /* Outside the media query so Tab-focusing the button reveals it even on
+       a device with no hover support — keyboard reachability must never
+       depend on hover capability. */
+    .task-item__menu-btn:focus-visible {
+      opacity: 1;
     }
     /* Fix 4 (dedupe): every section heading in this app — Focus (in the
        main view) and the three standalone screens (Trash/Overdue/Settings) —
@@ -301,6 +319,17 @@
     }
     .task-menu__item--danger {
       color: #fca5a5;
+    }
+    /* Step 22: the menu's first separator — divides the new top group (the
+       most common single-task actions, reached from the "⋯" button and the
+       long-press/right-click gesture alike) from the pre-existing item list
+       below it. A plain 1px line in the menu's own dark palette, not a full
+       <hr> — a `<div role="separator">` keeps the exact same box-model
+       control the surrounding flex column of buttons already has. */
+    .task-menu__separator {
+      height: 1px;
+      margin: 4px 6px;
+      background-color: rgba(255, 255, 255, 0.15);
     }
     /* Fix (product-spec.md:70-75): the "Move under…" picker — a `.task-menu`
        (so it inherits that class's box/position/`:not([hidden])` rules
@@ -749,6 +778,48 @@
        inline per-row buttons call — there is no separate menu-only
        implementation of any of these. -->
   <div id="task-menu" class="task-menu" hidden>
+    <!-- Step 22: the top group — the actions most tasks need most often,
+         reachable from the new "⋯" button as well as the pre-existing
+         long-press/right-click gesture. Label flips per current state in
+         openTaskMenuForTask, same toggle-label shape "Pin to Focus"/"Unpin
+         from Focus" below already uses. -->
+    <button type="button" class="task-menu__item" data-action="mark-complete">Mark as completed</button>
+    <!-- Step 22: opens the same inline note editor a direct click on the
+         note display already does (beginEdit/beginNoteEdit,
+         handleAddNoteMenuClick in app.js) — no separate "add note" write
+         path of its own. -->
+    <button type="button" class="task-menu__item" data-action="add-note">Add note</button>
+    <!-- Step 13 (D10), moved into this new top group by step 22: "Set due
+         date"/"Change due date" always opens the inline `<input
+         type="date">` editor on the row the menu was opened for (label
+         toggles per whether a due date already exists — see
+         openTaskMenuForTask below, which overwrites this button's text on
+         every open; the "Add due date" text below is only ever the
+         pre-first-open default). -->
+    <button type="button" class="task-menu__item" data-action="edit-due-date">Add due date</button>
+    <!-- Step 22: single task only — children stay with the original, never
+         copied. Copies title/note/due date, recomputes tags from the copied
+         title, resets pinned/completed, and omits recurrence entirely — see
+         handleDuplicateClick's own comment in app.js for the full
+         field-by-field rule. -->
+    <button type="button" class="task-menu__item" data-action="duplicate">Duplicate</button>
+    <!-- Step 22: reparents onto the previous RENDERED sibling, landing as its
+         last child. Hidden when there is no previous rendered sibling to
+         become the new parent — see openTaskMenuForTask below. -->
+    <button type="button" class="task-menu__item" data-action="indent-in">Indent inside</button>
+    <!-- Step 22: reparents onto the current parent's own parent (may be
+         root) — a promote-one-level move. Hidden for a task that's already
+         at the root, the same predicate "Move to top level" below already
+         uses. -->
+    <button type="button" class="task-menu__item" data-action="indent-out">Indent outside</button>
+    <button type="button" class="task-menu__item task-menu__item--danger" data-action="delete">Delete</button>
+    <!-- Step 22: divides the top group above (the actions most tasks need
+         most often) from the pre-existing, more situational item list
+         below. -->
+    <div class="task-menu__separator" role="separator"></div>
+    <!-- Step 4: add a subtask under this task. This context-menu item is now
+         the only way to reach this action — step 22 removed the row's own
+         always-visible "+ Subtask" button that used to sit alongside it. -->
     <button type="button" class="task-menu__item" data-action="add-subtask">Add subtask</button>
     <!-- Step 11 (D9): the promote-to-root move drag can't express — there is
          no row to drop a task onto for "no parent". Shown only for a task
@@ -775,13 +846,6 @@
          handleTogglePinClick/enqueueMutation-wrapped saveTask, not a
          parallel implementation. -->
     <button type="button" class="task-menu__item" data-action="toggle-pin">Pin to Focus</button>
-    <!-- Step 13 (D10): "Set due date"/"Change due date" opens the inline
-         `<input type="date">` editor on the row the menu was opened for
-         (app.js's openTaskMenuForTask sets both the label and
-         taskMenu.dataset.context per open). "Clear due date" is a one-shot
-         write with no editor step, shown only when task.dueDate is set. -->
-    <button type="button" class="task-menu__item" data-action="edit-due-date">Set due date</button>
-    <button type="button" class="task-menu__item" data-action="clear-due-date">Clear due date</button>
     <!-- Step 18 (Recurrence, S18-0/D10 precedent): a single prompt-based
          editor (app.js's handleSetRecurrenceClick), label toggled per
          whether a rule is already set. There is deliberately NO separate
@@ -789,7 +853,10 @@
          explicitly (deleting the task is what ends a cycle); the editor's
          own "none" answer is how a misconfigured rule gets corrected. -->
     <button type="button" class="task-menu__item" data-action="set-recurrence">Set recurrence</button>
-    <button type="button" class="task-menu__item task-menu__item--danger" data-action="delete">Delete</button>
+    <!-- Step 13 (D10): a one-shot write with no editor step, shown only when
+         task.dueDate is set. Moved below the separator with the other
+         secondary/situational actions. -->
+    <button type="button" class="task-menu__item" data-action="clear-due-date">Clear due date</button>
   </div>
 
   <!-- Fix (product-spec.md:70-75): the "Move under…" candidate picker —

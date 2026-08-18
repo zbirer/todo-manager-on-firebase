@@ -68,13 +68,39 @@ title those two are not the same.
     Dragging is not the only way: the task menu offers a move command too, so
     the whole hierarchy stays reachable on a touch screen without a precise
     drag.
-  - **The task menu** is the same on both platforms and opens the same way on each:
-    a **long press** on a task on mobile, a **right-click** on desktop. It holds the
-    per-task commands — move, delete, and stopping a recurrence.
+  - **The task menu** is the same on both platforms and holds the full set of
+    per-task commands. It opens three ways: a **long press** on a task on
+    mobile, a **right-click** on desktop, and a hover-revealed **⋯ button** on
+    the row's left edge — the discoverable entry point on both, since long
+    press and right-click are easy to miss without being told about them.
+    All three open the identical menu; none is more capable than the others,
+    and no command lives only as a permanent on-row button.
   - **Delete** from the task menu. Deleting a parent **deletes its entire
     sub-tree** — children are never promoted up a level and never left orphaned.
     Because this can remove far more than the one task I clicked, it is confirmed
     before it happens.
+  - **Duplicate**, from the task menu, copies a single task — its title, note,
+    and due date — into a new task placed immediately **below the original**,
+    as its next sibling. Children are not copied: a duplicated parent's
+    sub-tree stays with the original, since giving every descendant a new
+    identity while preserving the tree shape is a bigger feature than "make a
+    copy of this one task," and is left for later. Tags are recomputed from
+    the copied title rather than carried over verbatim, and the duplicate
+    otherwise starts clean — unpinned, not completed, with no recurrence and
+    no completed-occurrence history, since two tasks cannot share one
+    recurring identity.
+  - **Indent inside** and **Indent outside**, from the task menu, reparent a
+    task one level without a drag. Indent inside makes the task the **last
+    child of the sibling immediately above it in the order the list is
+    currently showing** — priority rank first, my own manual order as
+    tie-breaker (see **List Order** below) — not the order the siblings were
+    created in, since a higher-priority sibling can visually sit between two
+    lower ones. Indent outside moves the task up one level, placing it
+    **immediately after its former parent** among that parent's own siblings.
+    Neither touches anything else in the tree: indent outside does not pull
+    the task's younger siblings along as new children of it — they simply
+    stay where they were, still under the original parent — and both commands
+    respect the same 7-level depth limit as every other move.
 - **Trash:** Deletion is not final. Deleted tasks go to a **trash**, where I can
   find and restore them — a restored parent comes back with the sub-tree it was
   deleted with, since that is what was removed in one act. The trash holds the

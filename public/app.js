@@ -261,6 +261,17 @@ const searchEmptyMessage = document.getElementById("search-empty-message");
 // (unfiltered) visible set.
 const searchErrorMessage = document.getElementById("search-error-message");
 const taskMenu = document.getElementById("task-menu");
+// Step 22: label flips per current `completed` state, same toggle-label
+// shape as taskMenuTogglePinItem below — see openTaskMenuForTask below.
+const taskMenuMarkCompleteItem = taskMenu.querySelector('[data-action="mark-complete"]');
+// Step 22: hidden when there is no previous RENDERED sibling to become the
+// new parent — see renderedSiblings' own comment (near performReparent) for
+// why "rendered" order, not raw stored `order`, is what this has to check.
+const taskMenuIndentInItem = taskMenu.querySelector('[data-action="indent-in"]');
+// Step 22: hidden for a task that's already at the root — the exact same
+// `task.parentId != null` predicate taskMenuMoveToTopItem below already
+// uses, since indenting outside is itself a kind of promote-one-level move.
+const taskMenuIndentOutItem = taskMenu.querySelector('[data-action="indent-out"]');
 // Step 11 (D9): shown only for a task that currently has a parent — see
 // openTaskMenuForTask below.
 const taskMenuMoveToTopItem = taskMenu.querySelector('[data-action="move-to-top"]');
@@ -399,6 +410,23 @@ function openTaskMenuForTask(taskId, x, y, context = "main") {
 
   closeTaskMenu();
   closeMovePicker(); // a picker left open for a different task means nothing once a new menu opens
+
+  // Step 22: mark-complete's label names the CURRENT state's opposite,
+  // exactly like taskMenuTogglePinItem's Pin/Unpin toggle below.
+  taskMenuMarkCompleteItem.textContent = task.completed ? "Mark as not completed" : "Mark as completed";
+  // Step 22: indent-out only promotes a task that currently has somewhere to
+  // promote TO — the identical no-op-avoidance reasoning taskMenuMoveToTopItem
+  // below already applies to the exact same predicate.
+  taskMenuIndentOutItem.style.display = task.parentId != null ? "" : "none";
+  // Step 22: indent-in needs a previous RENDERED sibling to become the new
+  // parent — renderedSiblings (defined near performReparent below) is the
+  // one shared "(quadrantRank, order) sort, same key render.js's
+  // compareSiblings renders by" helper every step-22 action that cares about
+  // sibling adjacency uses, so this can never quietly diverge from what
+  // indent-in itself will actually reparent onto.
+  const indentInSiblings = renderedSiblings(task.parentId);
+  const taskRenderIndex = indentInSiblings.findIndex((t) => t.id === taskId);
+  taskMenuIndentInItem.style.display = taskRenderIndex > 0 ? "" : "none";
 
   // Step 11 (D9): only a task that already has a parent has anywhere to
   // "promote" from — a root task choosing this would be a no-op.
@@ -938,38 +966,17 @@ taskForm.addEventListener("submit", (event) => {
 // always `false`) is exactly what a reopened task keeps. Pinning is a cheap,
 // explicit, one-click act; silently resurrecting a pin the user never asked
 // to restore on reopen would be worse than just making them re-pin it.
-taskSection.addEventListener("change", (event) => {
-  // Step 14: the Tag Settings screen's color inputs are reached through this
-  // same delegated listener (#settings-view is nested inside #task-section for
-  // exactly that reason, following #trash-view/#overdue-view's precedent).
-  // Checked before the checkbox branch because a settings row carries no
-  // `data-task-id` at all — everything below this point assumes one.
-  // `change` (not `input`) so a drag through a native color picker commits
-  // once on release, not once per intermediate shade.
-  const colorInput = event.target.closest(".tag-setting__color");
-  if (colorInput) {
-    const tagName = colorInput.closest("li")?.dataset.tagName;
-    if (tagName) handleTagColorChange(tagName, colorInput.dataset.colorField, colorInput.value);
-    return;
-  }
-
-  // Step 15: the Tag Settings screen's quadrant <select>, same delegated
-  // listener, same "checked before a data-task-id is required" placement as
-  // the color branch just above.
-  const quadrantSelect = event.target.closest(".tag-setting__quadrant");
-  if (quadrantSelect) {
-    const tagName = quadrantSelect.closest("li")?.dataset.tagName;
-    if (tagName) handleTagQuadrantChange(tagName, quadrantSelect.value);
-    return;
-  }
-
-  const checkbox = event.target.closest(".task-item__checkbox");
-  if (!checkbox) return;
-
-  const taskId = checkbox.closest("li")?.dataset.taskId;
-  const nextCompleted = checkbox.checked;
-
-  enqueueMutation(async () => {
+// Step 22: pure extraction of the checkbox change handler's body below into
+// a callable-by-name function, so the new "Mark as completed"/"Mark as not
+// completed" menu item can reach the exact same cascade-complete/un-complete-
+// memory/recurrence-advance logic instead of a second, parallel
+// implementation. `taskId`/`nextCompleted` are the same two captured values
+// the checkbox listener used to close over — everything from here down is
+// verbatim, unreordered, unrenamed: this is the single highest-risk piece of
+// this step precisely because the checkbox path must keep behaving
+// byte-identically to before it had a second caller.
+function handleToggleCompleted(taskId, nextCompleted) {
+  return enqueueMutation(async () => {
     const userId = getCurrentUserId();
     const task = getTasks().find((t) => t.id === taskId);
     if (!userId || !task) return; // abandon cleanly — task is gone or user signed out
@@ -1084,6 +1091,40 @@ taskSection.addEventListener("change", (event) => {
       await refreshTasks();
     }
   });
+}
+
+taskSection.addEventListener("change", (event) => {
+  // Step 14: the Tag Settings screen's color inputs are reached through this
+  // same delegated listener (#settings-view is nested inside #task-section for
+  // exactly that reason, following #trash-view/#overdue-view's precedent).
+  // Checked before the checkbox branch because a settings row carries no
+  // `data-task-id` at all — everything below this point assumes one.
+  // `change` (not `input`) so a drag through a native color picker commits
+  // once on release, not once per intermediate shade.
+  const colorInput = event.target.closest(".tag-setting__color");
+  if (colorInput) {
+    const tagName = colorInput.closest("li")?.dataset.tagName;
+    if (tagName) handleTagColorChange(tagName, colorInput.dataset.colorField, colorInput.value);
+    return;
+  }
+
+  // Step 15: the Tag Settings screen's quadrant <select>, same delegated
+  // listener, same "checked before a data-task-id is required" placement as
+  // the color branch just above.
+  const quadrantSelect = event.target.closest(".tag-setting__quadrant");
+  if (quadrantSelect) {
+    const tagName = quadrantSelect.closest("li")?.dataset.tagName;
+    if (tagName) handleTagQuadrantChange(tagName, quadrantSelect.value);
+    return;
+  }
+
+  const checkbox = event.target.closest(".task-item__checkbox");
+  if (!checkbox) return;
+
+  const taskId = checkbox.closest("li")?.dataset.taskId;
+  const nextCompleted = checkbox.checked;
+
+  handleToggleCompleted(taskId, nextCompleted);
 });
 
 // 5b. Click-to-edit: clicking a title or a note opens it for inline editing.
@@ -1143,13 +1184,20 @@ taskSection.addEventListener("click", async (event) => {
     return;
   }
 
-  if (event.target.closest(".task-item__add-subtask-btn")) {
-    await handleAddSubtaskClick(taskId);
-    return;
-  }
-
-  if (event.target.closest(".task-item__delete-btn")) {
-    await handleDeleteClick(taskId);
+  // Step 22: the "⋯" affordance — opens the exact same context menu the
+  // long-press/right-click gesture already builds (openTaskMenuForTask),
+  // positioned off the button's own rect rather than event.clientX/Y (a
+  // keyboard-triggered Enter/Space activation carries no meaningful pointer
+  // coordinates of its own) — openTaskMenuForTask's own on-screen clamping
+  // is what keeps that rect-derived position sane near a viewport edge.
+  // Replaces the row's old always-visible "+ Subtask"/"Delete" buttons this
+  // step removed — the click branches that used to reach `.task-item__add-
+  // subtask-btn`/`.task-item__delete-btn` here went with them, since those
+  // classes no longer exist on any row.
+  const menuBtnEl = event.target.closest(".task-item__menu-btn");
+  if (menuBtnEl) {
+    const rect = menuBtnEl.getBoundingClientRect();
+    openTaskMenuForTask(taskId, rect.left, rect.bottom, contextForRow(li));
     return;
   }
 
@@ -1436,6 +1484,115 @@ async function handleAddSubtaskClick(parentId) {
     } catch (error) {
       console.error("Failed to add subtask:", error);
       alert("Could not add subtask.");
+    }
+  });
+}
+
+// Step 22: "Duplicate" — copies exactly ONE task, never its subtree (any
+// children stay put, still parented to the original — this is a sibling
+// copy, not a subtree clone). Lands immediately BELOW the original among its
+// RENDERED siblings, not at the top of the group the way a bare addTask()
+// call would default to (taskService.js's own top-of-group fallback is for
+// brand-new tasks created from the input box, not for this).
+//
+// Field-by-field rule (locked, do not extend without updating this
+// comment): COPIED verbatim — title, note, dueDate. RECOMPUTED — tags, via
+// the exact same parseTags(title) every other title-writing path in this
+// file already calls (handleAddSubtaskClick above, the add-task listener),
+// never hand-copied from the original's own `tags` array. RESET — pinned
+// and completed both force to false: a duplicate is a fresh, unpinned, open
+// task regardless of what the original currently is. OMITTED entirely —
+// recurrence, occurrenceStart, closedByCascadeFrom, deletedByCascadeFrom —
+// none of those are copied OR defaulted here; addTask never receives them,
+// so they simply don't exist on the new document (normalizeTask's own
+// `?? null` fallbacks fill them in on the next read, same as any other
+// freshly created task). `createdAt`/`updatedAt` are stamped fresh by
+// addTask regardless of anything passed in. Deliberately NO "(copy)" suffix
+// — the title is copied exactly as typed.
+async function handleDuplicateClick(taskId) {
+  const userId = getCurrentUserId();
+  const original = getTasks().find((t) => t.id === taskId);
+  if (!userId || !original || original.deleted) return;
+
+  await enqueueMutation(async () => {
+    const currentUserId = getCurrentUserId();
+    const currentOriginal = getTasks().find((t) => t.id === taskId);
+    if (!currentUserId || !currentOriginal || currentOriginal.deleted) return; // gone — abandon cleanly
+
+    // "Next rendered sibling" — the (quadrantRank, order) sort render.js's
+    // compareSiblings computes fresh every render (see renderedSiblings' own
+    // comment near performReparent below for why this can never be derived
+    // from raw stored `order` alone). Re-derived here at write time, not
+    // from whatever was on screen at click time — the usual "never trust a
+    // value captured before the queue ran" rule.
+    const siblings = renderedSiblings(currentOriginal.parentId);
+    const originalIndex = siblings.findIndex((t) => t.id === taskId);
+    const nextRenderedSibling =
+      originalIndex >= 0 && originalIndex + 1 < siblings.length ? siblings[originalIndex + 1] : null;
+    const orderPlan = computeReorderOrder(currentOriginal, nextRenderedSibling);
+
+    try {
+      // `orderPlan.order` passes straight into addTask below with no
+      // corrective second write — the ordinary case. The `renumber: true`
+      // branch (the gap to the next sibling has been halved too many times
+      // to hold a distinct midpoint) reuses the exact splice-and-renumber
+      // loop the drag-drop reorder path already runs (finishDrag, this same
+      // file) — mirrored here with one difference: the duplicate doesn't
+      // exist yet, so it's spliced into the sorted array as a placeholder
+      // (skipped when writing existing siblings' new orders) and its own
+      // slot's sequential value is handed to addTask directly instead of a
+      // second saveTask.
+      let duplicateOrder;
+      if (orderPlan.renumber) {
+        const finalOrder = [...siblings];
+        const insertAt = originalIndex + 1; // immediately after the original, same as the ordinary case above
+        finalOrder.splice(insertAt, 0, null); // the not-yet-created duplicate's slot
+        for (let i = 0; i < finalOrder.length; i++) {
+          if (i === insertAt) continue; // filled in by addTask below, not an existing sibling to re-save
+          await saveTask(currentUserId, { ...finalOrder[i], order: (i + 1) * 1000 });
+        }
+        duplicateOrder = (insertAt + 1) * 1000;
+      } else {
+        duplicateOrder = orderPlan.order;
+      }
+
+      const title = currentOriginal.title;
+      await addTask(
+        currentUserId,
+        {
+          title,
+          tags: parseTags(title),
+          note: currentOriginal.note,
+          // Firestore Timestamp -> plain Date, mirroring how every other
+          // dueDate-forwarding call in this file hands a value to addTask
+          // (timestampToDate is the one shared unwrapper — `new Date(<a
+          // Timestamp>)` directly, which addTask's own `new Date(...)` call
+          // would otherwise produce, does not reliably round-trip).
+          dueDate: currentOriginal.dueDate ? timestampToDate(currentOriginal.dueDate) : null,
+          parentId: currentOriginal.parentId,
+          // Same parent as the original, so the original's own `ancestors`
+          // IS the correct chain for this duplicate too — no separate
+          // ancestorChain() computation needed (contrast handleAddSubtaskClick
+          // above, which computes a NEW chain because it's creating a CHILD
+          // of the reference task, not a sibling of it).
+          ancestors: currentOriginal.ancestors,
+          order: duplicateOrder,
+          pinned: false,
+          completed: false,
+        },
+        getTasks()
+      );
+    } catch (error) {
+      console.error("Failed to duplicate task:", error);
+      alert("Could not duplicate task. The list has been refreshed to show what actually saved.");
+    } finally {
+      // Always resync, not just on success — the `renumber: true` branch
+      // above can write several existing siblings' new orders before
+      // addTask ever runs, so a failure partway through must still refresh
+      // to show whatever subset of those writes actually landed (same
+      // "finally-refresh" rule every other multi-write mutation in this file
+      // follows: performReparent, finishDrag's reorder, handleToggleCompleted).
+      await refreshTasks();
     }
   });
 }
@@ -1965,6 +2122,18 @@ async function handleTagUndoClick() {
       await refreshTasks();
     }
   });
+}
+
+// Step 22: the context menu's "Add note" item — opens the inline note
+// editor on the SAME row/context the menu was opened for, the exact same
+// click-to-edit machinery (beginEdit/beginNoteEdit) a direct click on the
+// note display already uses (see the delegated click listener above). Not a
+// mutation itself, same as handleEditDueDateMenuClick just below — the
+// actual write happens on commit (blur/Escape), not on this menu choice.
+function handleAddNoteMenuClick(taskId, context) {
+  const fieldSuffix = fieldSuffixForContext(context);
+  beginEdit(taskId, "note" + fieldSuffix);
+  beginNoteEdit(taskId, context);
 }
 
 // Step 13 (D10): the context menu's "Set due date"/"Change due date" item —
@@ -2647,6 +2816,28 @@ export function computeReorderOrder(prevTask, nextTask) {
   return { renumber: false, order: (prevTask.order + nextTask.order) / 2 };
 }
 
+// Step 22: the RENDERED sibling group for `parentId` — the exact
+// `(quadrantRank, order)` sort render.js's compareSiblings computes fresh on
+// every render and never stores (see its own comment, render.js), mirroring
+// the identical derivation finishDrag's own reorder handler already does
+// just above (`currentSiblingsRaw`/`currentSiblingsRankMap`/
+// `currentSiblings`) — pulled out into one named helper here because step 22
+// adds THREE more call sites that need this same "who is next to whom on
+// screen" answer (duplicate's placement, and both indent directions' parent/
+// position math below), and a raw stored `order` comparison would silently
+// give the wrong answer: a higher-ranked sibling can sit visually between
+// two same-rank ones, so "previous/next" is a render-time question, never a
+// same-order-field question. Deleted tasks are never siblings; `excludeTaskId`
+// lets a caller ask "the group WITHOUT this one task" (unused today, kept
+// symmetric with the reorder handler's own `t.id !== taskId` filter above).
+function renderedSiblings(parentId, excludeTaskId = null) {
+  const siblingsRaw = getTasks().filter(
+    (t) => !t.deleted && t.parentId === parentId && t.id !== excludeTaskId
+  );
+  const rankMap = computeQuadrantRankMap(siblingsRaw, getTagSettings());
+  return sortTasks(siblingsRaw, rankMap);
+}
+
 // Step 11 (D1): the shared reparent handler both the drag-drop reparent
 // target AND the "Move to top level" menu item (D9) route through — there is
 // no parallel implementation of either. `newParentId === null` means "move
@@ -2658,7 +2849,17 @@ export function computeReorderOrder(prevTask, nextTask) {
 // copy" rule every mutation in this app follows (see enqueueMutation's own
 // comment in store.js): something else could have changed the tree in the
 // time it took this mutation to reach the front of the queue.
-async function performReparent(taskId, newParentId) {
+// Step 22: `orderPlan` is a new, OPTIONAL third argument — the
+// `{ renumber, order? }` shape computeReorderOrder already returns
+// elsewhere in this file — letting a caller ask for a specific landing spot
+// instead of this function's own unparameterized default (top of the new
+// parent's group, computed below). Left `undefined`, every pre-step-22
+// caller (drag-drop's reparent branch above, "Move to top level", "Move
+// under…") is byte-identical to before this step: none of them pass a third
+// argument, so the `orderPlan &&` check below always falls through to the
+// exact same top-of-group formula that already existed. Only the two new
+// indent actions further down ever pass one.
+async function performReparent(taskId, newParentId, orderPlan) {
   await enqueueMutation(async () => {
     const userId = getCurrentUserId();
     const currentTask = getTasks().find((t) => t.id === taskId);
@@ -2739,7 +2940,25 @@ async function performReparent(taskId, newParentId) {
     // questions; this one wants the minimum.
     const newSiblings = getTasks().filter((t) => !t.deleted && t.id !== taskId && t.parentId === newParentId);
     const newSiblingOrders = newSiblings.map((t) => t.order);
-    const newOrder = newSiblingOrders.length > 0 ? Math.min(...newSiblingOrders) - 1000 : 0;
+    // Step 22: `orderPlan.renumber === true` (the two neighbours the caller
+    // computed it from have been midpoint-halved too many times to hold a
+    // distinct value — an extremely tight, rare case) falls back to this
+    // same top-of-group formula rather than duplicating finishDrag's whole-
+    // sibling-group splice-and-renumber loop in here too. This function
+    // already writes a whole subtree's worth of documents in one mutation
+    // (the dragged/reparented task plus every descendant, just below);
+    // stacking a second sibling group's worth of renumbering writes on top
+    // of that would turn a single indent into a multi-document blast radius
+    // nobody asked for, just to land in the exact intended slot instead of
+    // the top of the new group. The task still ends up under the right
+    // parent either way — only its exact position among same-parent
+    // siblings would differ, and only in this rare renumber case.
+    const newOrder =
+      orderPlan && !orderPlan.renumber
+        ? orderPlan.order
+        : newSiblingOrders.length > 0
+          ? Math.min(...newSiblingOrders) - 1000
+          : 0;
 
     // Issue 7 fix: snapshotted ONCE before the loop, matching step 5/6/8's
     // established idiom (`currentById`/`currentParent`) — nothing else can
@@ -2779,6 +2998,67 @@ async function performReparent(taskId, newParentId) {
       await refreshTasks();
     }
   });
+}
+
+// Step 22: "Indent inside" — reparents onto the task's own previous RENDERED
+// sibling (renderedSiblings above — never a raw-order predecessor, which can
+// differ from what's actually adjacent on screen), landing as that new
+// parent's LAST child. Routes through the one shared performReparent (D1's
+// own precedent — no parallel reparent implementation), passing the
+// computed bottom-of-group order as the new optional third argument so the
+// write doesn't fall back to performReparent's own default (top of the new
+// parent's children).
+async function handleIndentInClick(taskId) {
+  const task = getTasks().find((t) => t.id === taskId);
+  if (!task || task.deleted) return;
+
+  const siblings = renderedSiblings(task.parentId);
+  const taskIndex = siblings.findIndex((t) => t.id === taskId);
+  const prevRenderedSibling = taskIndex > 0 ? siblings[taskIndex - 1] : null;
+  if (!prevRenderedSibling) return; // no previous rendered sibling — the menu item hides this case already
+
+  // Last child of prevRenderedSibling: max(orders)+1000 among its EXISTING
+  // children (never `taskId` itself — it isn't one of them yet). Computed
+  // via computeReorderOrder(lastChild, null) rather than hand-rolled
+  // arithmetic, so this reuses the exact same bottom-of-group formula the
+  // rest of the file already has, including its "no children at all" (any
+  // value works) fallback to 0.
+  const newParentChildren = getTasks().filter(
+    (t) => !t.deleted && t.parentId === prevRenderedSibling.id && t.id !== taskId
+  );
+  const lastChildByOrder =
+    newParentChildren.length > 0
+      ? newParentChildren.reduce((max, t) => (t.order > max.order ? t : max))
+      : null;
+  const orderPlan = computeReorderOrder(lastChildByOrder, null);
+
+  await performReparent(taskId, prevRenderedSibling.id, orderPlan);
+}
+
+// Step 22: "Indent outside" — reparents onto the task's current parent's own
+// parent (`formerParent.parentId`, which may itself be null — promoting to
+// root), landing IMMEDIATELY AFTER that former parent among the
+// grandparent's RENDERED children. The former task's own younger siblings
+// are deliberately left completely untouched — they stay exactly where they
+// are, still parented to the former parent; they do NOT follow the indented
+// task out and become ITS children.
+async function handleIndentOutClick(taskId) {
+  const task = getTasks().find((t) => t.id === taskId);
+  if (!task || task.deleted || task.parentId == null) return; // already at the root — menu item hides this case
+
+  const formerParent = getTasks().find((t) => t.id === task.parentId);
+  if (!formerParent) return; // parent vanished from under it — nothing sane to indent out of
+
+  const grandparentId = formerParent.parentId ?? null;
+  const grandchildrenOfGrandparent = renderedSiblings(grandparentId);
+  const formerParentIndex = grandchildrenOfGrandparent.findIndex((t) => t.id === formerParent.id);
+  const siblingAfterFormerParent =
+    formerParentIndex >= 0 && formerParentIndex + 1 < grandchildrenOfGrandparent.length
+      ? grandchildrenOfGrandparent[formerParentIndex + 1]
+      : null;
+
+  const orderPlan = computeReorderOrder(formerParent, siblingAfterFormerParent);
+  await performReparent(taskId, grandparentId, orderPlan);
 }
 
 function finishDrag() {
@@ -2897,6 +3177,16 @@ taskSection.addEventListener("pointerdown", (event) => {
   // long-press menu) means anything for one.
   if (!li?.dataset.taskId) return;
 
+  // Step 22: a pointerdown on the "⋯" button itself must start neither a
+  // drag nor the long-press-arms-menu timer below — its own click handler
+  // (the delegated click listener further down) already opens the exact
+  // same menu synchronously. Without this exclusion, a slow press/hold on
+  // this small button would ALSO fire the long-press timer and race its own
+  // click toward opening the same menu a second time — the identical
+  // reasoning the drag-handle exclusion just below already established for
+  // a different row control.
+  if (event.target.closest(".task-item__menu-btn")) return;
+
   // Step 10: a pointerdown on the drag handle starts a drag instead of the
   // long-press timer, full stop — it never even schedules one, which is
   // exactly what "cancel/suppress the long-press timer" (this step's plan)
@@ -2979,7 +3269,18 @@ taskMenu.addEventListener("click", async (event) => {
   closeTaskMenu();
   if (!taskId) return;
 
-  if (action === "add-subtask") await handleAddSubtaskClick(taskId);
+  if (action === "mark-complete") {
+    // Step 22: reads the CURRENT state fresh at click time (not the label
+    // the menu happened to show, which is itself already derived from this
+    // same read at open time) — handleToggleCompleted is the pure extraction
+    // of the checkbox's own change handler, unchanged either way.
+    const task = getTasks().find((t) => t.id === taskId);
+    if (task) await handleToggleCompleted(taskId, !task.completed);
+  } else if (action === "add-note") handleAddNoteMenuClick(taskId, context);
+  else if (action === "duplicate") await handleDuplicateClick(taskId);
+  else if (action === "indent-in") await handleIndentInClick(taskId);
+  else if (action === "indent-out") await handleIndentOutClick(taskId);
+  else if (action === "add-subtask") await handleAddSubtaskClick(taskId);
   else if (action === "move-to-top") await performReparent(taskId, null);
   else if (action === "move-under") {
     // The picker opens synchronously inside this same click's dispatch, so

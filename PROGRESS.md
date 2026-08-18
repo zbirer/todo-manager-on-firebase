@@ -3781,3 +3781,62 @@ introducing a new one. No renumbering was needed and none was done.
 
 Old documents keep `inInbox: true` until a future `saveTask` rewrites them;
 there is no backfill and none is planned.
+
+## Row menu discoverability + Duplicate/Indent (2026-08-18)
+
+Product decision, at the user's request, modeled on Workflowy: task rows lose
+their two permanent right-edge buttons ("+ Subtask" and "Delete"), and gain a
+hover-revealed **⋯ button on the row's left edge** that opens the existing
+per-task menu. Right-click and long-press still open the same menu; the ⋯ is
+an additional, discoverable entry point, not a replacement for them. Both
+former row buttons move into the menu, which also gains three new commands:
+Duplicate, Indent inside, Indent outside. `product-spec.md` §3 was amended in
+place (the "task menu" and "Delete" bullets, plus two new bullets for
+Duplicate and Indent inside/outside) — this is a **spec change**, not a
+deviation, so a future review diffing against it should see no gap.
+
+Decisions made at planning time, with reasoning:
+
+- **Duplicate copies one task, not its subtree.** Children stay with the
+  original. A deep copy would need id-remapping of the `ancestors` array
+  across every descendant, which has no precedent anywhere in this codebase —
+  reparent (the closest existing operation) rewrites `ancestors` for a moved
+  subtree but never *forks* it. Deferred as its own future step rather than
+  built half-way.
+- **The duplicate lands immediately below the original**, as its next
+  sibling — not at the top of the sibling group, which is where `addTask`
+  puts new tasks by default (§3, *List Order*). It copies title, note, and
+  due date; recomputes tags from the (copied) title rather than copying tag
+  state verbatim; resets `pinned` and `completed` to `false`; and does not
+  carry over `recurrence`, `occurrenceStart`, or either cascade-provenance
+  field, because two tasks sharing one recurrence identity is not a coherent
+  state — completing either would advance a due date the other one owns. No
+  "(copy)" suffix is added to the title.
+- **Indent inside makes a task the last child of its previous *rendered*
+  sibling; indent outside moves it up one level, landing immediately after
+  its former parent.** Both read sibling order as `(quadrantRank, order)`,
+  computed client-side on every render and never persisted — not the raw
+  `order` field alone — because a higher-rank sibling can sit visually
+  between two same-rank ones, and "the sibling above it" has to mean what the
+  user is actually looking at, not an internal field they never see.
+- **Outdent leaves the former task's younger siblings in place** — they do
+  NOT become its children. True Workflowy behavior there would reparent a
+  cascade of arbitrarily many tasks, each needing its own descendant
+  `ancestors` rewrite (the same cost that ruled out a deep-copy Duplicate
+  above). Deliberately not done; scope stayed at "move one task up a level."
+- **`performReparent` gains an optional third parameter** carrying an order
+  override. Absent, it behaves byte-identically to today, so its three
+  existing callers (drag-drop, "Move to top level", "Move under…") are
+  untouched. The rejected alternative was reparent-then-corrective-second-write:
+  it doubles the writes, and because this app has no optimistic update — it
+  refetches and re-renders after each write — that approach would make every
+  indent visibly jump to the top of its new parent and then settle into
+  place, rather than landing directly where it belongs.
+- **"Add due time" resolved to due *date*, no schema change.** The request
+  was for "add duetime," but the schema stores date only, and overdue
+  detection, quadrant ranking, and recurrence advancement (§5) all assume a
+  bare date. Adding real time-of-day is separate future work; the new menu
+  item just opens the existing date picker.
+- Both indent directions inherit the existing 7-level depth-cap refusal via
+  `canReparent` unchanged — no new depth logic was written for either
+  direction.

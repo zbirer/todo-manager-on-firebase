@@ -3892,3 +3892,58 @@ dedicated `.task-item__checkbox` rule. The same global rule was also hitting
 the "Show completed" toggle and the due-date input, so both are fixed by the
 same change. This bug predates all of the above — it was found while
 restyling the row, not caused by the restyle.
+
+## Enter-to-create-next-task, Workflowy-style (2026-08-18)
+
+Product decision, at the user's request: pressing Enter while a task's inline
+title editor is open now does two things in one keystroke — it commits the
+title being edited AND creates the next task, opening its editor with the
+cursor already in it. Three decisions were made explicit at planning time
+because none of them followed mechanically from "add Enter-to-create":
+
+- **The new task gets a visible `"New task"` placeholder title, not a blank
+  unsaved draft row.** The alternative — opening an empty, uncommitted row
+  the user types into before anything is written to Firestore — was rejected
+  because an empty title is illegal at **two** separate layers of this app:
+  `taskService.js:32`'s `addTask` throws on it outright, and the focusout
+  commit handler (`app.js:2367`, pre-existing) already alerts-and-reverts
+  rather than ever letting one reach `addTask`. Building a third, in-memory
+  "empty task that isn't really a task yet" state would mean teaching every
+  other reader of `getTasks()` (rendering, sorting, tagging) to tolerate a
+  row with no backing document — a second task representation living
+  alongside the one this whole app is built around (whole-document
+  `saveTask`, one read-refetch-render cycle, no optimistic local mutation).
+  A real, saved placeholder task keeps the one-representation rule intact:
+  the new row exists in Firestore the moment it's visible, exactly like every
+  other task in this app, and the placeholder text is simply what a normal
+  edit-and-commit would replace.
+- **Enter splits the title at the cursor, rather than always creating a
+  blank task after the whole line.** With the cursor in the middle of a
+  title, the text before it becomes the saved title of the task being
+  edited, and the text after becomes the new task's title — matching
+  Workflowy's own behavior and letting one long capture be typed once and
+  then chopped into several tasks by moving the cursor and hitting Enter,
+  rather than requiring a separate later edit to shorten the first task's
+  title. This only fires for a caret (not a text selection — slicing around
+  a selection would silently discard whatever was selected, and this app has
+  no undo) and only when both halves would themselves be valid saves; an
+  over-length or over-tagged tail falls back to a plain, unsplit commit
+  instead of forwarding invalid data to `addTask` and losing it there with
+  nothing but a console error.
+- **A task with existing sub-tasks gets the new task as its first child,
+  not its next sibling.** Pressing Enter at the end of a task that already
+  has a hierarchy under it reads as "start a new item under this one," not
+  "add another item beside it" — the natural continuation of typing is
+  downward into the structure that's already there, not out past it. A task
+  with no children keeps the plain next-sibling placement, the same
+  RENDERED-order precedent `handleDuplicateClick` already established.
+
+This flow is deliberately restricted to the **main task list**: a
+freshly created task starts unpinned with no due date, so it can never
+actually render on the Focus or Overdue screens, and opening its editor
+there would silently do nothing. `render.js`'s `beginTitleEdit` gained an
+optional `selectAll` parameter (default `true`, preserving every existing
+click-to-edit call site byte-for-byte) so the split case can open the new
+editor with the cursor at position 0 instead of the whole (carried-over)
+text selected — selecting it would mean the very next keystroke wipes out
+the text that was just split off.

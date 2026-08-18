@@ -62,6 +62,24 @@ title those two are not the same.
   - **Edit** by clicking the title or the note directly and typing — editing is
     inline, with no separate edit screen or mode. Editing the title is also how
     tags are added and removed, since tags live in the title text.
+  - **Enter, while editing a title, both saves it and creates the next task** —
+    a Workflowy-style flow for capturing several tasks in a row without ever
+    reaching for the mouse. Pressing Enter with the cursor somewhere in the
+    middle of the title **splits at the cursor**: the text before it becomes
+    the saved title of the task being edited, and the text after it becomes
+    the title of the new task, whose own title editor opens immediately with
+    the cursor placed at the very start (not with the text selected — the
+    point is to keep typing where the previous task's title left off, not to
+    retype it). Pressing Enter with nothing after the cursor (or with the
+    cursor at the very end) instead creates a new task carrying the visible
+    placeholder title **"New task"**, ready to be typed over. If the task
+    being edited already has sub-tasks under it, the new task is placed as
+    its **first child** rather than as its next sibling — continuing to type
+    after a task that already has a hierarchy under it reads as "start a new
+    item under this one," not "add another item beside it." This flow is
+    only available in the main task list — a freshly created task has no due
+    date and is not pinned, so it could never actually appear on the Focus or
+    Overdue screens.
   - **Move** by dragging the task onto a new parent. A task carries its whole
     sub-tree with it. Dragging also sets the order within a level (see **List
     Order** below), so one gesture serves both re-parenting and re-ordering.

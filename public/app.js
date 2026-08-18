@@ -1597,6 +1597,130 @@ async function handleDuplicateClick(taskId) {
   });
 }
 
+// Step 25: Workflowy-style "Enter creates the next task" — the counterpart
+// the keydown/focusout handlers above call once a title-save mutation they
+// queued has resolved successfully. `splitTail` is the text typed after the
+// caret at the moment Enter was pressed (present only when the keydown
+// handler decided the split was valid), or `null`/`undefined` for a plain
+// "create a blank task after this one".
+//
+// Placement mirrors handleDuplicateClick above, with one addition: a task
+// that already has a live child gets the new task as its FIRST CHILD rather
+// than as its own next sibling — pressing Enter at the end of a task that
+// already has sub-tasks under it reads as "start a new first item under me",
+// not "add another sibling next to me". Every other placement rule
+// (RENDERED-sibling order, the splice-and-renumber fallback) is copied
+// verbatim from handleDuplicateClick, not reinvented.
+async function handleCreateTaskAfter(taskId, splitTail) {
+  const newId = await enqueueMutation(async () => {
+    const currentUserId = getCurrentUserId();
+    // Re-read, never trust the task the keydown/focusout handlers had in
+    // hand — that was captured before the TITLE-SAVE mutation even ran, and
+    // this is a SECOND, independently queued mutation after it: the task can
+    // have been deleted or reparented in the gap between the two (the usual
+    // "never trust a value captured before the queue ran" rule — see
+    // enqueueMutation's own comment, store.js).
+    const currentTask = getTasks().find((t) => t.id === taskId);
+    if (!currentUserId || !currentTask || currentTask.deleted) return null; // gone — abandon cleanly
+
+    // A visible "New task" placeholder rather than a blank title — an empty
+    // title is illegal at two separate layers (taskService.js's addTask and
+    // this file's own focusout validation above), so there is no such thing
+    // as an unsaved blank draft row in this app to open the editor on top
+    // of; the placeholder is what actually gets saved.
+    const title = splitTail && splitTail.trim() ? splitTail.trim() : "New task";
+    const tags = parseTags(title);
+
+    try {
+      const freshTree = buildTree(getTasks());
+      const hasLiveChild = getTasks().some((t) => !t.deleted && t.parentId === taskId);
+
+      let parentId;
+      let ancestors;
+      let order;
+
+      // Belt-and-braces depth guard, same cap handleAddSubtaskClick checks:
+      // a task already at the 7-level limit can't legally take a child
+      // either way (firestore.rules' ancestors.size() <= 6), and a task WITH
+      // a live child is by construction always shallower than that cap, so
+      // this condition can never actually fail today. Falling back to the
+      // ordinary sibling placement below keeps this function correct rather
+      // than silently attempting an invalid write if that ever stops
+      // holding.
+      if (hasLiveChild && depthOf(freshTree, taskId) < 6) {
+        parentId = taskId;
+        // From the tree via ancestorChain, NOT from `currentTask.ancestors`
+        // — the same fix handleAddSubtaskClick and performReparent both
+        // already apply, for the same reason (see handleAddSubtaskClick's
+        // own comment above): a stale or corrupted cached `ancestors` field
+        // must never propagate into a new task underneath it.
+        ancestors = [...ancestorChain(freshTree, taskId), taskId];
+        // `computeReorderOrder(null, firstChild)` can never return
+        // `{ renumber: true }` — that branch only fires when BOTH neighbours
+        // are non-null and their gap has collapsed — so there is no
+        // splice-and-renumber fallback to copy here, unlike the sibling
+        // branch below.
+        order = computeReorderOrder(null, renderedSiblings(taskId)[0]).order;
+      } else {
+        // Next RENDERED sibling — identical placement precedent to
+        // handleDuplicateClick above, including its splice-and-renumber
+        // fallback (copied verbatim, not reinvented).
+        parentId = currentTask.parentId;
+        ancestors = currentTask.ancestors;
+        const siblings = renderedSiblings(parentId);
+        const currentIndex = siblings.findIndex((t) => t.id === taskId);
+        const nextSibling =
+          currentIndex >= 0 && currentIndex + 1 < siblings.length ? siblings[currentIndex + 1] : null;
+        const orderPlan = computeReorderOrder(currentTask, nextSibling);
+        if (orderPlan.renumber) {
+          const finalOrder = [...siblings];
+          const insertAt = currentIndex + 1; // immediately after the current task, same as the ordinary case below
+          finalOrder.splice(insertAt, 0, null); // the not-yet-created task's slot
+          for (let i = 0; i < finalOrder.length; i++) {
+            if (i === insertAt) continue; // filled in by addTask below, not an existing sibling to re-save
+            await saveTask(currentUserId, { ...finalOrder[i], order: (i + 1) * 1000 });
+          }
+          order = (insertAt + 1) * 1000;
+        } else {
+          order = orderPlan.order;
+        }
+      }
+
+      return await addTask(currentUserId, { title, tags, parentId, ancestors, order }, getTasks());
+    } catch (error) {
+      console.error("Failed to create next task:", error);
+      alert("Could not create the next task. The list has been refreshed to show what actually saved.");
+      return null;
+    } finally {
+      // Always resync, not just on success — the renumber branch above can
+      // write several existing siblings' new orders before addTask ever
+      // runs, same "finally-refresh" rule every other multi-write mutation
+      // in this file follows (handleDuplicateClick just above, performReparent,
+      // finishDrag's reorder, handleToggleCompleted).
+      await refreshTasks();
+    }
+  });
+
+  if (!newId) return; // task vanished, or the write failed — nothing to open an editor on
+
+  // The focus() beginTitleEdit is about to do lands two serialized
+  // Firestore round trips after the original keypress (the title-save
+  // mutation, then this one) — easily long enough for the user to have
+  // clicked into some OTHER row's editor in the meantime. Stealing focus
+  // back from them would be worse than simply leaving the new row unfocused
+  // — it still exists either way, just without a pre-opened editor.
+  const activeTag = document.activeElement?.tagName;
+  if (activeTag === "INPUT" || activeTag === "TEXTAREA") return;
+
+  beginEdit(newId, "title");
+  // A split tail is text the user already typed and carried over — select()
+  // would highlight it so the very next keystroke wipes it back out (the
+  // exact reason render.js's beginTitleEditIn grew a selectAll parameter).
+  // The literal "New task" placeholder is meant to be replaced outright, so
+  // it keeps the ordinary select-all behavior every other title edit uses.
+  beginTitleEdit(newId, "main", !splitTail);
+}
+
 // Step 12 (D7): pin/unpin a single task into Focus. Context-menu only — no
 // inline per-row button — the same shape as step 11's "Move to top level"
 // (D9): one shared handler, routed to from the menu's click dispatch below,
@@ -2295,6 +2419,51 @@ taskSection.addEventListener("keydown", (event) => {
 
   if (event.key === "Enter" && (isTitleInput || isDueDateInput)) {
     event.preventDefault();
+
+    // Step 25 (Workflowy-style Enter): on a TITLE input only — due-date
+    // Enter stays a plain commit — decide whether this keystroke ALSO
+    // creates the next task, before `blur()` below throws away
+    // `selectionStart`/`selectionEnd` (browsers reset both on blur, so this
+    // must run first). Gated to the main list: a brand-new task is unpinned
+    // with no due date, so it can never render in the Focus or Overdue
+    // lists, and `beginTitleEdit` there would silently no-op — leaving the
+    // task created but no visible editor for it. `event.repeat` is excluded
+    // too, so holding Enter down doesn't fire a cascade of "New task" rows
+    // off the OS's key-repeat.
+    const li = event.target.closest("li");
+    if (isTitleInput && !event.repeat && contextForRow(li) === "main") {
+      const input = event.target;
+      input.dataset.createAfter = "true"; // one-shot flag, same pattern as dataset.cancelling below — read (and cleared) by the focusout handler
+      const { selectionStart, selectionEnd, value } = input;
+      if (selectionStart === selectionEnd) {
+        const before = value.slice(0, selectionStart);
+        const after = value.slice(selectionStart);
+        const afterTrimmed = after.trim();
+        // The commit path below (and taskService.js's addTask) only ever
+        // validates the COMMITTED half. An unvalidated tail sailing straight
+        // into addTask would throw there and lose the typed text with
+        // nothing but a console error to show for it — so a tail that would
+        // fail either check falls back to a plain (unsplit) commit instead.
+        const tailValid = afterTrimmed.length <= TITLE_MAX_LENGTH && parseTags(afterTrimmed).length <= TAGS_MAX_COUNT;
+        if (before.trim() && tailValid) {
+          // Split: truncate the input's value NOW so the existing focusout
+          // commit path saves exactly `before`, with zero changes to its own
+          // validation — it never learns a split even happened. The rest of
+          // the text becomes the new task's title.
+          input.value = before;
+          input.dataset.splitTail = after;
+        }
+        // else: caret at the very start (`before.trim()` empty — an empty
+        // title is illegal) or an over-length/over-tagged tail. Leave the
+        // full value to commit as one piece; the new task still gets
+        // created, just with the "New task" placeholder title (no
+        // splitTail) rather than a slice of this one.
+      }
+      // else: a live text SELECTION, not a caret — slicing around it would
+      // silently drop whatever was selected, and this app has no undo.
+      // Commit the untouched value and create a plain "New task" after it.
+    }
+
     event.target.blur(); // falls through to the focusout handler, which commits
   } else if (event.key === "Escape") {
     event.preventDefault();
@@ -2354,6 +2523,17 @@ taskSection.addEventListener("focusout", async (event) => {
 
   const cancelling = target.dataset.cancelling === "true";
   delete target.dataset.cancelling;
+  // Step 25: the keydown handler's Enter branch stashes these as one-shot
+  // flags, same pattern as `cancelling` above. Reading AND deleting them
+  // here — beside `cancelling`, before any of the early returns below — means
+  // every one of those returns (cancelled, signed out, task gone, invalid
+  // title) consumes them too, so a flag set on THIS edit can never survive
+  // onto some later, unrelated edit of the same input and create a task
+  // nobody asked for.
+  const createAfter = target.dataset.createAfter === "true";
+  delete target.dataset.createAfter;
+  const splitTail = target.dataset.splitTail;
+  delete target.dataset.splitTail;
 
   if (cancelling || !userId || !task) {
     endEdit();
@@ -2393,8 +2573,30 @@ taskSection.addEventListener("focusout", async (event) => {
         setValue(currentTask.title); // revert to the last-saved value
       }
     });
+    // Step 25: `createAfter` is only ever true here — an invalid or
+    // cancelled title returned above, before this line, so acting on the
+    // flag "falls out" naturally in those cases without any extra check.
+    if (createAfter) {
+      // Begin this BEFORE the old row's own closeEdit just below. Without a
+      // held guard, the interaction depth would sit at 0 for the entire gap
+      // between the old edit closing and the new one opening — a full
+      // second Firestore round trip (handleCreateTaskAfter's own
+      // addTask-then-refetch) — and endInteraction (store.js) fires any
+      // PENDING background refresh the instant depth hits 0, which could
+      // otherwise race this very sequence. `closeEdit` is idempotent, so
+      // releasing the OLD field's key just below never double-counts
+      // against this separate, synthetic one.
+      beginEdit(taskId, "createAfter");
+    }
     endEdit();
     closeEdit(taskId, field);
+    if (createAfter) {
+      try {
+        await handleCreateTaskAfter(taskId, splitTail);
+      } finally {
+        closeEdit(taskId, "createAfter"); // released once the new editor has opened (or the create has resolved on any path)
+      }
+    }
   } else if (isNoteInput) {
     const newNote = getValue();
     if (newNote.length > NOTE_MAX_LENGTH) {

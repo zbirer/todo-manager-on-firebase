@@ -878,14 +878,27 @@ function mapForContext(context) {
 
 // --- Title edit mode -------------------------------------------------------
 
-function beginTitleEditIn(map, taskId) {
+// Step 25: `selectAll` lets the caller choose the caret behavior. Every
+// existing entry point (click-to-edit) wants the default `true` — the whole
+// title highlighted so the first keystroke replaces it, byte-identical to
+// the pre-step-25 behavior. The one caller that wants `false` is the
+// Workflowy-style "Enter splits the title and opens the next task's editor"
+// flow (app.js's handleCreateTaskAfter): the text handed to the new task's
+// title is the tail the user already typed, carried over from the split, and
+// select()-ing it would mean the very next keystroke wipes that text back
+// out — the opposite of "continue typing where you left off".
+function beginTitleEditIn(map, taskId, selectAll = true) {
   const entry = map.get(taskId);
   if (!entry) return;
   entry.editingTitle = true;
   entry.label.style.display = "none";
   entry.titleInput.style.display = "";
   entry.titleInput.focus();
-  entry.titleInput.select();
+  if (selectAll) {
+    entry.titleInput.select();
+  } else {
+    entry.titleInput.setSelectionRange(0, 0);
+  }
 }
 
 // Closing an edit must resync the text it is about to reveal. While
@@ -930,8 +943,8 @@ function setTitleInputValueIn(map, taskId, value) {
   if (entry) entry.titleInput.value = value;
 }
 
-export function beginTitleEdit(taskId, context) {
-  beginTitleEditIn(mapForContext(context), taskId);
+export function beginTitleEdit(taskId, context, selectAll = true) {
+  beginTitleEditIn(mapForContext(context), taskId, selectAll);
 }
 export function endTitleEdit(taskId, context) {
   endTitleEditIn(mapForContext(context), taskId);

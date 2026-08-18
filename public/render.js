@@ -31,17 +31,16 @@
 // based on clicks and commits); render.js only owns *how* the DOM looks in
 // each state, exposed through the begin/end/get/set functions below.
 //
-// Step 5 (Inbox container): `renderTasks` renders into *multiple* containers
-// (the Inbox section and the main list) from ONE shared `entriesByTaskId`
-// Map, so a task id always maps to exactly one <li> in exactly one
-// container's DOM, and moving a task between containers (filing it out of
-// the Inbox) reuses that same <li> rather than destroying and recreating it.
+// `renderTasks` takes its tree container as an ARRAY (a shape kept from an
+// earlier design where more than one tree section rendered side by side from
+// ONE shared `entriesByTaskId` Map) — a task id always maps to exactly one
+// <li> in that container's DOM.
 //
-// Step 12 (Focus/pin, D1/D2/D4): Focus is a third container rendered inside
+// Step 12 (Focus/pin, D1/D2/D4): Focus is a second container rendered inside
 // the SAME `renderTasks` call (never a second call — see the containers-doc
 // comment below for why a second call to the shared-map version would
-// corrupt it), but it deliberately does NOT share `entriesByTaskId` with
-// Inbox/main. A pinned task renders BOTH in Focus AND in its normal place at
+// corrupt it), but it deliberately does NOT share `entriesByTaskId` with the
+// main list. A pinned task renders BOTH in Focus AND in its normal place at
 // once (D4) — a real second <li> for one task id, which the one-id-one-<li>
 // invariant above cannot support. Exactly like step 9's Trash
 // (`trashEntriesByTaskId` below), Focus gets its own separate Map, so its own
@@ -316,9 +315,9 @@ export function computeAgeLabel(createdAt, now = new Date()) {
 // D5: the exact ordering mechanism issue 1's Focus fix introduced (see
 // PROGRESS.md's superseding Decisions entry) — a hand-picked flat set's
 // order is each task's index in the REAL depth-first render position the
-// tree containers (Inbox, then the main list, in that order) produce, never
-// a raw `order`-field comparison (which is only meaningful within one
-// sibling group). Hoisted into its own exported function, rather than left
+// tree container (the main list) produces, never a raw `order`-field
+// comparison (which is only meaningful within one sibling group). Hoisted
+// into its own exported function, rather than left
 // inline inside renderTasks, specifically so Overdue (a separate SCREEN,
 // rendered from its own call — see the file-header note above) can share the
 // identical mechanism instead of a second, independently-drifting copy;
@@ -335,21 +334,17 @@ export function computeAgeLabel(createdAt, now = new Date()) {
 // of their own to maintain").
 export function computeMainListOrderIndex(nonDeletedTasks, rankMap = new Map()) {
   const orderIndex = new Map();
-  const groups = [
-    nonDeletedTasks.filter((task) => task.inInbox),
-    nonDeletedTasks.filter((task) => !task.inInbox),
-  ];
-  for (const tasks of groups) {
-    const visibleIds = new Set(tasks.map((task) => task.id));
-    for (const { task } of flattenTree(tasks, visibleIds, rankMap)) {
-      if (!orderIndex.has(task.id)) orderIndex.set(task.id, orderIndex.size);
-    }
+  const visibleIds = new Set(nonDeletedTasks.map((task) => task.id));
+  for (const { task } of flattenTree(nonDeletedTasks, visibleIds, rankMap)) {
+    if (!orderIndex.has(task.id)) orderIndex.set(task.id, orderIndex.size);
   }
   return orderIndex;
 }
 
 // `containers` is an array of `{ element, tasks, visibleIds }` — one entry
-// per rendered TREE section (step 5 adds the Inbox alongside the main list).
+// per rendered TREE section (the main list is the only one today; the array
+// shape is kept because renderTasks's own reconciliation logic is written
+// against "every tree container", not against a single fixed one).
 // `focusContainer` is `{ element, tasks }` (or `null`) for the Focus section
 // (step 12) — a separate parameter, not a third array entry, because it is
 // FLAT (D2) and lives in its own Map (see the file-header comment above for
@@ -368,9 +363,7 @@ export function computeMainListOrderIndex(nonDeletedTasks, rankMap = new Map()) 
 //
 // All TREE containers share ONE `entriesByTaskId` Map and go through ONE
 // seen/cleanup pass before any DOM is touched. That matters: a task id must
-// map to exactly one <li> among the tree containers, and Inbox vs. main are a
-// strict partition (a subtask always inherits its parent's `inInbox`, so no
-// task's ancestry ever crosses between the two) — but if this ran as two
+// map to exactly one <li> among the tree containers — but if this ran as two
 // independent calls to a single-container version of this function, the
 // FIRST call's cleanup would delete every entry the SECOND call still needs
 // (they're simply not in the first call's own seen set), destroying and
@@ -418,9 +411,9 @@ export function renderTasks(containers, focusContainer, onEditCancelled, tagSett
   // pinned tasks come from different parents. Reusing `perContainer`'s
   // already-computed `flattened` arrays (rather than a second traversal)
   // gives every visible task's position in that same depth-first order;
-  // containers are walked in the exact [Inbox, main list] sequence app.js
-  // always passes them in, so a pinned Inbox task and a pinned main-list
-  // task still land in one single, well-defined relative order.
+  // containers are walked in the exact sequence app.js always passes them
+  // in, so every pinned task still lands in one single, well-defined
+  // relative order.
   const mainListOrderIndex = computeMainListOrderIndex(containers.flatMap(({ tasks }) => tasks), rankMap);
   const focusTasks = focusContainer
     ? [...focusContainer.tasks].sort(
@@ -483,14 +476,14 @@ export function renderTasks(containers, focusContainer, onEditCancelled, tagSett
     }
   }
 
-  // A task moving between containers (filed out of the Inbox) simply shows
-  // up in a different container's `flattened` list on the next render;
+  // A task moving between tree containers would simply show up in a
+  // different container's `flattened` list on the next render;
   // reconcileChildren's insertBefore relocates its <li> there directly
   // (insertBefore natively reparents across different parents, not just
   // within one), so a task id is never a child of two TREE containers at
   // once. Focus's <li> is a wholly separate node in its own Map, so a task
   // being reconciled into Focus here never competes with its own
-  // reconciliation into the main list/Inbox above.
+  // reconciliation into the main list above.
   for (const { element, flattened } of perContainer) {
     reconcileChildren(element, flattened.map(({ task }) => entriesByTaskId.get(task.id).li));
   }
@@ -648,16 +641,6 @@ function createTaskElement(taskId) {
   actions.className = "task-item__actions";
   li.appendChild(actions);
 
-  // Step 5: the one explicit way a task leaves the Inbox. Only shown for
-  // rows currently in the Inbox (updateTaskElement toggles it) — a task
-  // that isn't there has nothing to file.
-  const moveOutButton = document.createElement("button");
-  moveOutButton.type = "button";
-  moveOutButton.className = "task-item__move-out-btn";
-  moveOutButton.textContent = "Move out of Inbox";
-  moveOutButton.setAttribute("aria-label", "Move out of Inbox");
-  actions.appendChild(moveOutButton);
-
   // Step 4: add a subtask under this task. Step 8 added a right-click/
   // long-press context menu with the same command, but this inline button
   // stays too — the spec's task menu is an additional way to reach these
@@ -693,7 +676,6 @@ function createTaskElement(taskId) {
     ageDisplay,
     quadrantBadge,
     recurrenceBadge,
-    moveOutButton,
     addSubtaskButton,
     deleteButton,
     editingTitle: false,
@@ -713,7 +695,7 @@ function createTaskElement(taskId) {
 // call site (search is out of scope for the Overdue screen — S19-6) needs no
 // change at all; only renderTasks below ever passes a real value.
 function updateTaskElement(entry, task, depth, tagSettings, isSearchContext = false) {
-  const { li, checkbox, label, titleInput, noteDisplay, noteInput, moveOutButton, addSubtaskButton } = entry;
+  const { li, checkbox, label, titleInput, noteDisplay, noteInput, addSubtaskButton } = entry;
 
   entry.task = task;
 
@@ -742,9 +724,6 @@ function updateTaskElement(entry, task, depth, tagSettings, isSearchContext = fa
   li.style.setProperty("--depth", depth ?? 0);
 
   checkbox.checked = !!task.completed;
-
-  // Only an Inbox row has anything to file out of the Inbox.
-  moveOutButton.style.display = task.inInbox ? "" : "none";
 
   // Fix: disable rather than let the click-time alert (app.js's
   // handleAddSubtaskClick) be the only thing standing between the user and a
@@ -1138,7 +1117,7 @@ export function renderTrash(container, tasks) {
 
 // The Restore button carries no listener of its own — same event-delegation
 // rule as every other per-row button in this app (see the main list's
-// moveOutButton/addSubtaskButton/deleteButton above). app.js's delegated
+// addSubtaskButton/deleteButton above). app.js's delegated
 // click listener on #task-section recognizes `.trash-item__restore-btn` and
 // dispatches to its own restore handler.
 function createTrashElement(taskId) {

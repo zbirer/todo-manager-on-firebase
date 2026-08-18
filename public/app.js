@@ -248,7 +248,6 @@ const taskSection = document.getElementById("task-section");
 const taskForm = document.getElementById("task-form");
 const taskInput = document.getElementById("task-input");
 const taskList = document.getElementById("task-list");
-const inboxList = document.getElementById("inbox-list");
 const showCompletedToggle = document.getElementById("show-completed-toggle");
 // Step 19 (Search — basic): the search box and the "no results" message that
 // replaces the lists in place (S19-9) — see renderMainView below for the
@@ -262,7 +261,6 @@ const searchEmptyMessage = document.getElementById("search-empty-message");
 // (unfiltered) visible set.
 const searchErrorMessage = document.getElementById("search-error-message");
 const taskMenu = document.getElementById("task-menu");
-const taskMenuMoveOutItem = taskMenu.querySelector('[data-action="move-out"]');
 // Step 11 (D9): shown only for a task that currently has a parent — see
 // openTaskMenuForTask below.
 const taskMenuMoveToTopItem = taskMenu.querySelector('[data-action="move-to-top"]');
@@ -288,8 +286,8 @@ const taskMenuSetRecurrenceItem = taskMenu.querySelector('[data-action="set-recu
 const movePicker = document.getElementById("move-picker");
 const movePickerList = document.getElementById("move-picker-list");
 
-// Step 12 (D1/D8): the Focus section/list — a third container rendered
-// alongside Inbox/main from the same renderTasks call (render.js), hidden
+// Step 12 (D1/D8): the Focus section/list — a second container rendered
+// alongside the main list from the same renderTasks call (render.js), hidden
 // entirely by renderMainView below whenever nothing is pinned.
 const focusSection = document.getElementById("focus-section");
 const focusList = document.getElementById("focus-list");
@@ -402,9 +400,6 @@ function openTaskMenuForTask(taskId, x, y, context = "main") {
   closeTaskMenu();
   closeMovePicker(); // a picker left open for a different task means nothing once a new menu opens
 
-  // Only an Inbox row has anything to file out of the Inbox — same rule
-  // updateTaskElement (render.js) uses for the inline per-row button.
-  taskMenuMoveOutItem.style.display = task.inInbox ? "" : "none";
   // Step 11 (D9): only a task that already has a parent has anywhere to
   // "promote" from — a root task choosing this would be a no-op.
   taskMenuMoveToTopItem.style.display = task.parentId != null ? "" : "none";
@@ -598,11 +593,9 @@ function renderMainView() {
 
   // Step 19 (S19-0/S19-5): the search filter stage, inserted AHEAD of every
   // filter this function already had — the ordering is load-bearing (S19-5)
-  // and must not be reshuffled. Built from `nonDeletedTasks` (both Inbox and
-  // main together, matching S19-6's "not Trash, not Overdue" scope) so a
-  // matched task's ancestor chain agrees with the exact tree the containers
-  // below render from; Inbox/main's strict partition means an ancestor chain
-  // never crosses between them anyway.
+  // and must not be reshuffled. Built from `nonDeletedTasks` (matching
+  // S19-6's "not Trash, not Overdue" scope) so a matched task's ancestor
+  // chain agrees with the exact tree the container below renders from.
   //
   // A blank search box makes `matchingTaskIds` return every task's id
   // (searchQuery.js: an empty/whitespace-only query has no AST, and
@@ -638,26 +631,19 @@ function renderMainView() {
     ? new Set()
     : new Set([...searchVisibleIds].filter((id) => !searchMatchIds.has(id)));
 
-  // Inbox vs. main is a strict partition: a subtask always inherits its
-  // parent's `inInbox` at creation time (handleAddSubtaskClick below), so no
-  // task's ancestry ever crosses between the two — each side is a complete,
-  // self-contained forest on its own.
-  const inboxTasks = nonDeletedTasks.filter((task) => task.inInbox);
-  const mainTasks = nonDeletedTasks.filter((task) => !task.inInbox);
-  const visibleIdsFor = (tasks) =>
-    new Set(
-      tasks
-        .filter((task) => showCompleted || !task.completed)
-        // Step 19 (S19-5): applied to the SAME candidate set the completed
-        // filter above just narrowed, exactly as the decision requires — a
-        // completed match hidden by "show completed" being off can never
-        // drag an otherwise-empty ancestor into view on its own, because the
-        // ancestor's own visibility here depends only on its OWN completed
-        // state, not on the hidden match that earned it a place in
-        // `searchVisibleIds`.
-        .filter((task) => searchVisibleIds.has(task.id))
-        .map((task) => task.id)
-    );
+  const visibleMainIds = new Set(
+    nonDeletedTasks
+      .filter((task) => showCompleted || !task.completed)
+      // Step 19 (S19-5): applied to the SAME candidate set the completed
+      // filter above just narrowed, exactly as the decision requires — a
+      // completed match hidden by "show completed" being off can never
+      // drag an otherwise-empty ancestor into view on its own, because the
+      // ancestor's own visibility here depends only on its OWN completed
+      // state, not on the hidden match that earned it a place in
+      // `searchVisibleIds`.
+      .filter((task) => searchVisibleIds.has(task.id))
+      .map((task) => task.id)
+  );
 
   // Step 12 (D2/D5/D8), ordering per issue 1's fix (SUPERSEDES step 12's D3
   // — see that superseding Decisions entry in PROGRESS.md, not the original
@@ -665,7 +651,7 @@ function renderMainView() {
   // subtree, never a second `renderTasks` call (render.js's own
   // containers-doc comment explains why). `renderTasks` itself decides
   // Focus's actual order: each pinned task's index in the depth-first RENDER
-  // POSITION `flattenTree` produces for the Inbox/main containers, not a
+  // POSITION `flattenTree` produces for the main list container, not a
   // sibling-comparator sort here — `order` is only comparable within one
   // sibling group, so a raw `sortTasks` over a cross-parent pinned set could
   // (and did) disagree with the main list's real order. This still inherits
@@ -679,7 +665,7 @@ function renderMainView() {
   // should never exist in the store to begin with; this filter just means a
   // stale/hand-edited doc can't leak a finished task into Focus even if that
   // invariant is ever violated some other way. `showCompleted` deliberately
-  // does NOT gate this filter the way it gates the main list/Inbox — a
+  // does NOT gate this filter the way it gates the main list — a
   // task's pinned flag being false is what removes it from Focus,
   // unconditionally, not a toggle.
   // Step 19 (S19-6): Focus is in scope for search too — a pinned task that
@@ -690,14 +676,8 @@ function renderMainView() {
   );
   focusSection.hidden = focusTasks.length === 0; // D8: no empty heading when nothing is pinned
 
-  const visibleInboxIds = visibleIdsFor(inboxTasks);
-  const visibleMainIds = visibleIdsFor(mainTasks);
-
   renderTasks(
-    [
-      { element: inboxList, tasks: inboxTasks, visibleIds: visibleInboxIds },
-      { element: taskList, tasks: mainTasks, visibleIds: visibleMainIds },
-    ],
+    [{ element: taskList, tasks: nonDeletedTasks, visibleIds: visibleMainIds }],
     { element: focusList, tasks: focusTasks },
     (id, field) => closeEdit(id, field),
     // Step 14: the tag settings cache, passed in rather than imported by
@@ -709,7 +689,7 @@ function renderMainView() {
     searchContextIds
   );
 
-  // S19-9: "No tasks match" replaces the (now genuinely empty) lists only
+  // S19-9: "No tasks match" replaces the (now genuinely empty) list only
   // when the box actually holds a query — a blank box producing zero visible
   // tasks means "you have no tasks," a different and correctly silent state,
   // which is why this checks the trimmed query rather than reusing
@@ -717,7 +697,7 @@ function renderMainView() {
   // this function's own opening comment, and would never on their own tell
   // "search found nothing" apart from "search is off").
   const isSearchActive = searchQuery.trim().length > 0;
-  const hasAnyVisibleTask = visibleInboxIds.size > 0 || visibleMainIds.size > 0 || focusTasks.length > 0;
+  const hasAnyVisibleTask = visibleMainIds.size > 0 || focusTasks.length > 0;
   searchEmptyMessage.hidden = !(isSearchActive && !hasAnyVisibleTask);
 }
 
@@ -1163,11 +1143,6 @@ taskSection.addEventListener("click", async (event) => {
     return;
   }
 
-  if (event.target.closest(".task-item__move-out-btn")) {
-    await handleMoveOutOfInboxClick(taskId);
-    return;
-  }
-
   if (event.target.closest(".task-item__add-subtask-btn")) {
     await handleAddSubtaskClick(taskId);
     return;
@@ -1395,19 +1370,6 @@ async function handleRestoreClick(taskId) {
 // delete: the depth/parent checks below are for fast feedback before
 // prompting; the queued mutation re-derives everything it needs from a
 // fresh read so it never acts on a stale parent.
-//
-// Step 5 correction: the new subtask's `inInbox` is inherited from its
-// parent, not hardcoded false. Step 4 reasoned "a task filed under an
-// explicit parent is not a bare capture" — true when the parent is already
-// organized (inInbox: false), so that case is unchanged. But when the
-// parent is itself still sitting in the Inbox (broken down into subtasks
-// before being filed anywhere), a hardcoded false would render the child in
-// the *main* list while its structural parent stays in the *Inbox* section —
-// two different containers, so the child would show up as a detached,
-// unindented "root" nowhere near the task it actually belongs to. Inheriting
-// keeps the whole not-yet-filed subtree together in the Inbox, matching the
-// spec's "a task carries its whole sub-tree with it" rule for Move, applied
-// here at creation time instead of at move time.
 
 async function handleAddSubtaskClick(parentId) {
   const userId = getCurrentUserId();
@@ -1465,7 +1427,6 @@ async function handleAddSubtaskClick(parentId) {
           tags,
           parentId,
           ancestors,
-          inInbox: currentParent.inInbox, // see the step 5 correction above
           // Step 14 (D3): no `colors` here either — same reason as the
           // add-task handler above.
         },
@@ -1475,49 +1436,6 @@ async function handleAddSubtaskClick(parentId) {
     } catch (error) {
       console.error("Failed to add subtask:", error);
       alert("Could not add subtask.");
-    }
-  });
-}
-
-// Step 5: file an Inbox item (and its whole subtree) into the main list —
-// the one explicit way a task ever leaves the Inbox. Nothing else does:
-// completing it, editing its title/note, and the 5-minute refresh all leave
-// `inInbox` untouched. "A task carries its whole sub-tree with it"
-// (product-spec.md's Move bullet) applies here too — every descendant that
-// inherited this task's Inbox membership (handleAddSubtaskClick above) gets
-// filed in the same action, so the group that has always rendered together
-// in the Inbox keeps rendering together afterward, just in the main list.
-async function handleMoveOutOfInboxClick(taskId) {
-  const userId = getCurrentUserId();
-  const task = getTasks().find((t) => t.id === taskId);
-  if (!userId || !task || !task.inInbox) return;
-
-  await enqueueMutation(async () => {
-    const currentUserId = getCurrentUserId();
-    const currentTask = getTasks().find((t) => t.id === taskId);
-    if (!currentUserId || !currentTask || currentTask.deleted || !currentTask.inInbox) {
-      return; // already filed, gone, or user signed out — nothing to do
-    }
-
-    // Re-derive the subtree fresh, from the full non-deleted set, at the
-    // moment this actually runs — not from whatever was true at click time.
-    const tree = buildTree(getTasks().filter((t) => !t.deleted));
-    const idsToFile = [taskId, ...descendantIds(tree, taskId)];
-    const currentById = new Map(getTasks().map((t) => [t.id, t]));
-
-    try {
-      for (const id of idsToFile) {
-        const current = currentById.get(id);
-        if (!current || !current.inInbox) continue; // already filed or gone
-        await saveTask(currentUserId, { ...current, inInbox: false });
-      }
-      // One refetch for the whole subtree, not one per document — this is
-      // still a single logical mutation (architecture rule 1), just one
-      // that happens to touch more than one task at a time.
-      await refreshTasks();
-    } catch (error) {
-      console.error("Failed to move task out of Inbox:", error);
-      alert("Could not move task out of Inbox.");
     }
   });
 }
@@ -2365,9 +2283,9 @@ taskSection.addEventListener("focusout", async (event) => {
 // 5e. Context menu wiring (step 8) — opens on right-click and on long-press,
 // closes on choosing an item, Escape, an outside click, scroll, or sign-out.
 // Every item routes to the exact same handler function the matching inline
-// per-row button already calls (handleAddSubtaskClick / handleMoveOutOfInboxClick
-// / handleDeleteClick above) — there is no parallel menu-only implementation
-// of any of these actions.
+// per-row button already calls (handleAddSubtaskClick / handleDeleteClick
+// above) — there is no parallel menu-only implementation of any of these
+// actions.
 
 // Right-click: the browser's own contextmenu event already carries the
 // pointer position and which element was targeted — no gesture tracking
@@ -2422,16 +2340,10 @@ function cancelLongPress() {
 //
 // `drag` holds everything the gesture needs, or is `null` when no drag is in
 // progress:
-//   - taskId / parentId / inInbox: identity of the task being moved, and
-//     which sibling group it belongs to. Siblings are matched on BOTH
-//     parentId and inInbox, not parentId alone — a root-level Inbox task and
-//     a root-level main-list task both have `parentId: null`, but they are
-//     NOT siblings; they render in two different containers because a
-//     subtask always inherits its parent's inInbox (step 5's decision), so
-//     the partition only actually needs disambiguating at the root. Every
-//     non-root task's siblings already share both fields automatically
-//     (inherited from the same parent), so this check is a no-op there and
-//     only matters at the root.
+//   - taskId / parentId: identity of the task being moved, and which sibling
+//     group it belongs to. Siblings are matched on `parentId` alone — every
+//     task sharing one `parentId` (including `null`, the root group) is one
+//     single sibling group, with no second field needed to disambiguate it.
 //   - otherSiblingIds: every OTHER live sibling's id, in the exact
 //     `(quadrantRank, order)` order render.js's sortTasks/compareSiblings
 //     renders them in (step 16) — used to find neighbours by array position.
@@ -2491,8 +2403,8 @@ function closeDragInteraction() {
 // One shared drop-indicator element, moved (never rebuilt) into whichever
 // <ul> the drag is currently over — the same "single shared element" pattern
 // step 8's task menu uses for the same reason: something that lived inside
-// #inbox-list or #task-list could be torn down by an unrelated refresh while
-// still in use. In practice no refresh CAN land mid-drag (the interaction
+// #task-list could be torn down by an unrelated refresh while still in use.
+// In practice no refresh CAN land mid-drag (the interaction
 // guard above blocks the 5-minute timer, and nothing else calls
 // refreshTasks() until the drop itself), but building it the same defensive
 // way costs nothing and keeps the two patterns consistent.
@@ -2554,7 +2466,7 @@ function beginDrag(taskId, event, handleEl) {
   if (!task || task.deleted) return;
 
   const siblingTasks = getTasks().filter(
-    (t) => !t.deleted && t.id !== taskId && t.parentId === task.parentId && t.inInbox === task.inInbox
+    (t) => !t.deleted && t.id !== taskId && t.parentId === task.parentId
   );
 
   // Step 16 (R3/R5): one Map<taskId, rank> for the whole drag, covering the
@@ -2576,7 +2488,6 @@ function beginDrag(taskId, event, handleEl) {
   drag = {
     taskId,
     parentId: task.parentId,
-    inInbox: task.inInbox,
     otherSiblingIds,
     rankMap,
     draggedRank,
@@ -2805,16 +2716,13 @@ async function performReparent(taskId, newParentId) {
 
     const descendantsFull = descendantIds(freshTree, taskId);
 
-    // D5/D6: the dragged task's new ancestors, and the inInbox the whole
-    // moved subtree now follows. A move to root (newParentTask null) leaves
-    // inInbox exactly as it was (D9) — there's no new parent to inherit from.
-    // Issue 4 fix: derived from `freshTree`/`parentId` via `ancestorChain` —
-    // NOT from `newParentTask.ancestors`, the cached field. See
+    // D5: the dragged task's new ancestors. Issue 4 fix: derived from
+    // `freshTree`/`parentId` via `ancestorChain` — NOT from
+    // `newParentTask.ancestors`, the cached field. See
     // rewriteDescendantAncestors's own comment in taskTree.js for the full
     // reasoning; this is the identical fix applied to the dragged task's own
     // write.
     const newAncestors = newParentTask ? [...ancestorChain(freshTree, newParentTask.id), newParentTask.id] : [];
-    const newInInbox = newParentTask ? newParentTask.inInbox : currentTask.inInbox;
 
     // D7: top of the new parent's (or the root group's) live children —
     // computed as a true minimum over the siblings' STORED `order`, the same
@@ -2848,7 +2756,6 @@ async function performReparent(taskId, newParentId) {
         ...currentTask,
         parentId: newParentId,
         ancestors: newAncestors,
-        inInbox: newInInbox,
         order: newOrder,
       });
 
@@ -2859,11 +2766,10 @@ async function performReparent(taskId, newParentId) {
         // prefix with its NEW one, deriving the descendant's tail from
         // `freshTree`/`parentId` (rewriteDescendantAncestors), never from
         // this descendant's own possibly-stale cached `ancestors`. parentId/
-        // order are untouched — only inInbox also follows (D6).
+        // order are untouched.
         await saveTask(userId, {
           ...current,
           ancestors: rewriteDescendantAncestors(freshTree, newAncestors, taskId, id),
-          inInbox: newInInbox,
         });
       }
     } catch (error) {
@@ -2913,7 +2819,7 @@ function finishDrag() {
     // `sortTasks` needs a rank Map now — built fresh here, once, not
     // recomputed per comparison.
     const currentSiblingsRaw = getTasks().filter(
-      (t) => !t.deleted && t.id !== taskId && t.parentId === parentId && t.inInbox === currentTask.inInbox
+      (t) => !t.deleted && t.id !== taskId && t.parentId === parentId
     );
     const currentSiblingsRankMap = computeQuadrantRankMap(currentSiblingsRaw, getTagSettings());
     const currentSiblings = sortTasks(currentSiblingsRaw, currentSiblingsRankMap);
@@ -3074,7 +2980,6 @@ taskMenu.addEventListener("click", async (event) => {
   if (!taskId) return;
 
   if (action === "add-subtask") await handleAddSubtaskClick(taskId);
-  else if (action === "move-out") await handleMoveOutOfInboxClick(taskId);
   else if (action === "move-to-top") await performReparent(taskId, null);
   else if (action === "move-under") {
     // The picker opens synchronously inside this same click's dispatch, so

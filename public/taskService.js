@@ -67,7 +67,7 @@ export const addTask = async (userId, taskDetails, existingTasks = []) => {
       completed: taskDetails.completed ?? false,
       deleted: taskDetails.deleted ?? false,
       pinned: taskDetails.pinned ?? false,
-      inInbox: taskDetails.inInbox ?? true,
+      inInbox: false, // vestigial — see normalizeTask's comment on this field below
       parentId,                                     // For task hierarchy
       ancestors: taskDetails.ancestors ?? [],        // For task hierarchy
       order: taskDetails.order ?? minSiblingOrder - 1000,
@@ -132,7 +132,15 @@ function normalizeTask(task) {
     ...task,
     deleted: task.deleted ?? false,
     pinned: task.pinned ?? false,
-    inInbox: task.inInbox ?? true,
+    // The Inbox feature was removed from the app; `inInbox` is written as a
+    // constant `false` (see addTask/saveTask below) purely because
+    // firestore.rules:52's isValidTask() still requires `d.inInbox is bool`
+    // on every write, and we are forbidden from touching that file. No code
+    // anywhere reads this field back — it's vestigial in the same way the
+    // dead `colors` field is (see the comment above addTask's `newTask`).
+    // A legacy document that still carries `inInbox: true` heals to `false`
+    // here, so the very next whole-document `saveTask` rewrites it clean.
+    inInbox: false,
     ancestors: task.ancestors ?? [],
     updatedAt: task.updatedAt ?? task.createdAt,
     // Derived from creation time so existing tasks get a stable relative

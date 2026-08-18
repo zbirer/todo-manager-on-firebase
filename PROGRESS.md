@@ -13,7 +13,7 @@ now the actual next action (see "Resume here" below).
 | 2 | Inline edit | done |
 | 3 | Soft delete (leaf) | done |
 | 4 | Hierarchy | done |
-| 5 | Inbox container | done |
+| 5 | Inbox container | REMOVED — see "Inbox removal (2026-08-18)" below |
 | 6 | Cascade complete | done |
 | 7 | Un-complete memory | done |
 | 8 | Context menu + cascade delete | done |
@@ -3718,3 +3718,66 @@ not cover `dataTransfer.js`.
   not changed as a side effect of the build-step fix.
 - `FIREBASE.md`'s "Security rules — three-way mismatch" section is stale on all four
   of its claims. Tracked as a separate background task.
+
+## Inbox removal (2026-08-18)
+
+Product decision, at the user's request: the Inbox feature (step 5, "a general
+capture container that a task sits in until moved out by hand") is removed.
+New tasks are now created directly into the main list, with no intermediate
+holding container to file them out of by hand.
+
+`product-spec.md` was amended to match: §3's "Task Inbox (Brain Dump)"
+requirement (formerly `:49-53`) is deleted outright, and the Move requirement
+(§3, formerly `:71`) dropped its "this is how Inbox items get filed into the
+hierarchy" clause while keeping the rest of the requirement intact. This is a
+**spec change**, not a deviation from spec — the baseline itself moved, so a
+future review diffing against it should see no gap here.
+
+The `inInbox` field itself is NOT removed from written documents. It survives
+as a constant `false` on every write, solely because `firestore.rules:52`
+asserts `d.inInbox is bool` inside `isValidTask()`, and this cleanup's rules
+are off-limits — no rules changes as part of removing the feature. Relaxing
+that assertion so the field can be dropped entirely is a deliberate, separate
+follow-up: it requires an actual rules deploy, and it should land only after
+every client is confirmed writing `false` (never `true`), so a rule change
+can't reject an in-flight write from a stale client. Documents written before
+this change keep `inInbox: true` until a future whole-document `saveTask`
+rewrites them to `false` — harmless, no migration script, the exact treatment
+`FIREBASE.md`'s already-dead `colors` field got at step 14.
+
+Two prior decisions are now **moot** and should not be re-honored by a future
+session:
+
+- **D6** (step 11, around `:2330-2335`) — "reparent propagates `inInbox` to
+  the whole moved subtree, since a subtree can't straddle the Inbox
+  boundary." There is no Inbox boundary left to straddle; reparenting no
+  longer touches `inInbox` at all.
+- **D9** (step 11, around `:2353-2362`) — "'Move to top level' leaves
+  `inInbox` unchanged, since there's no new parent to inherit from." Also
+  moot for the same reason — nothing inherits `inInbox` from a parent
+  anymore, at any reparent site.
+
+Two ordering decisions relied on there being two rendered groups (Inbox, then
+the main list) and now index a single one. Step 12's Focus ordering fix
+(`:2513-2519`) and step 13's Overdue ordering decision D5 (`:2583-2586`) both
+introduced `computeMainListOrderIndex` to read each task's position in "the
+depth-first render order the tree containers (Inbox, then main list, in that
+order) already produce." With Inbox gone there is only one container to
+index; both features now read position in that single group's render order
+via the same function, unchanged in every other respect.
+
+**Key safety finding**, worth preserving so it doesn't get re-litigated: the
+merge could not scramble any task's existing `order` value, because `order`
+was already drawn from ONE shared per-`parentId` scale, not two separate
+Inbox/main scales. Both writers that mint a fresh `order` scoped siblings by
+`parentId` alone — creation (`public/taskService.js:47-50`) and reparent
+(`public/app.js:2832`) — confirmed by reading both. The only two call sites
+that filtered siblings by `parentId` **and** `inInbox` were the plain-reorder
+(drag-within-a-level) paths, `public/app.js:2557` and `public/app.js:2916`.
+Dropping the `inInbox` clause at those two sites was therefore not a
+migration — it healed a pre-existing inconsistency (reorder was scoped more
+narrowly than the value it was reordering had ever actually used) rather than
+introducing a new one. No renumbering was needed and none was done.
+
+Old documents keep `inInbox: true` until a future `saveTask` rewrites them;
+there is no backfill and none is planned.

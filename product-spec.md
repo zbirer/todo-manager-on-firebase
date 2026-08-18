@@ -46,11 +46,6 @@ title those two are not the same.
   to break down complex goals, nested **up to 7 levels deep**. The limit exists so
   the tree stays readable on a narrow phone screen, where indentation runs out of
   room long before the structure does.
-- **Task Inbox (Brain Dump):** I can instantly write down tasks into a general
-  "Inbox" and organize them into hierarchies or assign dates later. The Inbox is a
-  **real container, not a computed view**: a captured task stays in it until I move
-  it out **by hand**. Giving a task a due date does not file it, and nothing ever
-  leaves the Inbox on its own — filing is always an explicit act.
 - **Completion State:** I can mark any task or sub-task as completed. Completion
   **cascades down**: completing a parent marks every task beneath it complete as
   well, at every level. Completed tasks are hidden from the list by default, with a
@@ -68,11 +63,11 @@ title those two are not the same.
     inline, with no separate edit screen or mode. Editing the title is also how
     tags are added and removed, since tags live in the title text.
   - **Move** by dragging the task onto a new parent. A task carries its whole
-    sub-tree with it, and this is how Inbox items get filed into the hierarchy.
-    Dragging also sets the order within a level (see **List Order** below), so one
-    gesture serves both re-parenting and re-ordering. Dragging is not the only way:
-    the task menu offers a move command too, so the whole hierarchy stays reachable
-    on a touch screen without a precise drag.
+    sub-tree with it. Dragging also sets the order within a level (see **List
+    Order** below), so one gesture serves both re-parenting and re-ordering.
+    Dragging is not the only way: the task menu offers a move command too, so
+    the whole hierarchy stays reachable on a touch screen without a precise
+    drag.
   - **The task menu** is the same on both platforms and opens the same way on each:
     a **long press** on a task on mobile, a **right-click** on desktop. It holds the
     per-task commands — move, delete, and stopping a recurrence.

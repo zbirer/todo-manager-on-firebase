@@ -217,9 +217,9 @@
     }
     /* All per-row action buttons live in one wrapper so pushing the whole
        group to the right (margin-left: auto) never depends on which
-       individual buttons happen to be visible — render.js toggles buttons
-       inside this wrapper independently (e.g. move-out-of-inbox only shows
-       for Inbox rows) without CSS having to know which one is "first". */
+       individual buttons happen to be visible — render.js can toggle buttons
+       inside this wrapper independently without CSS having to know which one
+       is "first". */
     .task-item__actions {
       display: flex;
       gap: 6px;
@@ -230,20 +230,18 @@
        these inline buttons stay too — the menu is an additional way in, not
        a replacement for them. */
     .task-item__add-subtask-btn,
-    .task-item__delete-btn,
-    .task-item__move-out-btn {
+    .task-item__delete-btn {
       padding: 4px 10px;
       font-size: 12px;
       font-weight: 500;
       background-color: rgba(0, 0, 0, 0.25);
       color: inherit;
     }
-    /* Fix 4 (dedupe): every section heading in this app — Inbox/Focus (in the
+    /* Fix 4 (dedupe): every section heading in this app — Focus (in the
        main view) and the three standalone screens (Trash/Overdue/Settings) —
        shares this exact rule. Grouped into one selector instead of five
        byte-identical copies; each `#foo h2` occurrence below this point was
        one of those copies. */
-    #inbox-section h2,
     #focus-section h2,
     #trash-view h2,
     #overdue-view h2,
@@ -251,13 +249,8 @@
       font-size: 16px;
       margin-bottom: 4px;
     }
-    #inbox-section {
-      padding-bottom: 8px;
-      border-bottom: 1px solid #d1d5db;
-      margin-bottom: 8px;
-    }
     /* Step 12: Focus — pinned tasks, flat (render.js's renderTasks flat
-       branch), sitting above Inbox/main (D8: it's the "what am I working on
+       branch), sitting above My Tasks (D8: it's the "what am I working on
        now" view). `hidden` (toggled by app.js's renderMainView) means no
        empty heading takes up space when nothing is pinned. Rows reuse the
        exact same .task-item markup/styling as the main list — a pinned row
@@ -610,7 +603,7 @@
       </label>
       <!-- Step 19 (Search — basic, S19-0): a FILTER over this same main-view
            render, never a separate view/screen — see app.js's renderMainView
-           for why (Focus/Inbox/pinning/drag/quadrant sort would all have to
+           for why (Focus/pinning/drag/quadrant sort would all have to
            be reimplemented for a standalone "search" screen). Every
            keystroke re-renders (S19-7: no debounce, see app.js); Escape
            clears it (S19-8, app.js's #search-input keydown branch). -->
@@ -629,7 +622,7 @@
            below. Step 15's quadrant mapping shares this same screen. -->
       <button type="button" id="settings-btn">Tag settings</button>
 
-      <!-- Step 19 (S19-9): replaces the Inbox/My Tasks/Focus lists' content
+      <!-- Step 19 (S19-9): replaces the My Tasks/Focus lists' content
            (never a silently empty container, which would be
            indistinguishable from a data-loss bug at a glance) when the
            search box holds an actual query and it matches nothing at all.
@@ -650,20 +643,11 @@
            subtree pulled in), sorted by the same comparator as the main list
            (D3). `hidden` by default; app.js's renderMainView toggles it based
            on whether anything is pinned, so an empty Focus never shows an
-           empty heading above the Inbox. Sits ABOVE the Inbox — it's the
+           empty heading above My Tasks. Sits ABOVE My Tasks — it's the
            "what am I working on right now" view, per the spec. -->
       <section id="focus-section" hidden>
         <h2>Focus</h2>
         <ul id="focus-list"></ul>
-      </section>
-
-      <!-- Step 5: a real container, not a computed view — a task sits here
-           until an explicit move files it into the list below. Shown first
-           since every new capture lands here by default (product-spec.md's
-           Inbox section). -->
-      <section id="inbox-section">
-        <h2>Inbox</h2>
-        <ul id="inbox-list"></ul>
       </section>
 
       <h2>My Tasks</h2>
@@ -761,19 +745,17 @@
   <!-- Step 8: the task context menu (right-click or long-press on a row).
        Deliberately OUTSIDE #task-section's lists — see the .task-menu CSS
        comment above for why. `data-task-id` is set by app.js when it opens;
-       "Move out of Inbox" is shown/hidden per task at open time (only an
-       Inbox row has anything to file). All three items route to the exact
-       same handler functions the existing inline per-row buttons call —
-       there is no separate menu-only implementation of any of these. -->
+       every item routes to the exact same handler functions the existing
+       inline per-row buttons call — there is no separate menu-only
+       implementation of any of these. -->
   <div id="task-menu" class="task-menu" hidden>
     <button type="button" class="task-menu__item" data-action="add-subtask">Add subtask</button>
-    <button type="button" class="task-menu__item" data-action="move-out">Move out of Inbox</button>
     <!-- Step 11 (D9): the promote-to-root move drag can't express — there is
          no row to drop a task onto for "no parent". Shown only for a task
          that currently HAS a parent (app.js's openTaskMenuForTask toggles
-         this the same way it already toggles "Move out of Inbox"). Routes
-         through the exact same reparent handler the drag-drop path uses
-         (performReparent in app.js), not a parallel implementation. -->
+         this per open). Routes through the exact same reparent handler the
+         drag-drop path uses (performReparent in app.js), not a parallel
+         implementation. -->
     <button type="button" class="task-menu__item" data-action="move-to-top">Move to top level</button>
     <!-- Fix (product-spec.md:70-75): a precise-drag-free way to reparent onto
          a SPECIFIC other task, not just the root "move-to-top" reaches above

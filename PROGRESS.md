@@ -3589,10 +3589,49 @@ throughout, confirmed via the browser's own network log):**
   field. Nothing about export/import is persisted beyond the tasks/settings
   it reads and writes through the already-existing paths.
 
+## Post-ladder cleanup (2026-08-18, after step 21)
+
+Two items the ladder flagged but had no authority to act on, both chosen by the
+user once the 21 steps were complete.
+
+- **cleanup 1 (recurrence-kind constants)** — `handleSetRecurrenceClick` in
+  `app.js` compared `kind` against the bare literals `"weekdays"`, `"weekly"`
+  and `"monthly"` while `recurrence.js` already exported
+  `RECURRENCE_KIND_WEEKDAYS` / `_WEEKLY` / `_MONTHLY` and the module used them
+  internally. Now imported and used. Behavior-preserving — the constants'
+  runtime values were confirmed in the browser to be byte-identical to the
+  literals they replaced, not merely assumed to be.
+- **cleanup 2 (`occurrenceStart` is cleared when a recurrence is stopped)** —
+  a real bug, not a tidy-up. Setting a recurrence back to "none" wrote
+  `recurrence: null` but left `occurrenceStart` holding the stamp from the
+  last advance (S18-3). That field is read in preference to `createdAt` by
+  BOTH the displayed age (`render.js:792`) and search's `age > Nd`
+  (`searchQuery.js:308`), so a task that stopped repeating kept reporting the
+  age of its final occurrence forever — with no repeat rule left on screen to
+  explain the number. The stop path now writes `occurrenceStart: null`
+  alongside `recurrence: null`, returning the task to the exact state a
+  never-recurring task is already in. Note this only heals on the next stop:
+  a task whose recurrence was stopped BEFORE this fix still carries a stale
+  `occurrenceStart`, and there is no backfill.
+- **cleanup 3 (deploy workflows no longer run a build)** — both
+  `firebase-hosting-merge.yml` and `firebase-hosting-pull-request.yml` carried
+  the Firebase CLI's stock `npm ci && npm run build` step, which failed every
+  run: this repo has no `package.json` and no build at all (`firebase.json`
+  sets `hosting.public: "public"`, and the SDK arrives over a CDN import map).
+  The step is removed from both; each file now carries a DO-NOT-re-add-a-build
+  comment so a future CLI regeneration doesn't quietly restore it. **Scope
+  deliberately held to fixing the breakage** — the merge workflow still
+  deploys `channelId: live` on every push to `main` with no approval gate, and
+  that trigger was left exactly as it was because changing it is a separate
+  decision (see the open item below).
+
 ## Open items (not steps)
 
-- `.github/workflows/firebase-hosting-merge.yml` deploys to the live site on push to
-  `main` and is broken (`npm ci && npm run build`, no `package.json`). **A push to
-  `main` is a production deploy.** Decide separately whether to fix or remove it.
+- `.github/workflows/firebase-hosting-merge.yml` is no longer broken (cleanup 3
+  above), which makes its trigger newly consequential rather than academic:
+  **a push to `main` now really does deploy to the live site**, with no manual
+  approval gate. Whether to add one (e.g. `workflow_dispatch`, an environment
+  protection rule, or a tag-triggered deploy) is undecided and was intentionally
+  not changed as a side effect of the build-step fix.
 - `FIREBASE.md`'s "Security rules — three-way mismatch" section is stale on all four
   of its claims. Tracked as a separate background task.

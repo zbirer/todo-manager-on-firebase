@@ -39,6 +39,9 @@ import {
 // the two places a rule is described.
 import {
   RECURRENCE_KINDS,
+  RECURRENCE_KIND_MONTHLY,
+  RECURRENCE_KIND_WEEKDAYS,
+  RECURRENCE_KIND_WEEKLY,
   advanceRecurrence,
   deriveAnchorFromDate,
   describeRecurrence,
@@ -2018,7 +2021,16 @@ async function handleSetRecurrenceClick(taskId) {
       const currentTask = getTasks().find((t) => t.id === taskId);
       if (!currentUserId || !currentTask || currentTask.deleted) return;
       try {
-        await saveTask(currentUserId, { ...currentTask, recurrence: null });
+        // Stopping a recurrence must also clear `occurrenceStart`. It is the
+        // stamp the LAST advance left behind (S18-3), and it is what both the
+        // displayed age (render.js:792) and search's `age > Nd`
+        // (searchQuery.js:308) read in preference to `createdAt`. Left in
+        // place on a task that no longer repeats, it permanently pins the age
+        // to that final advance — a task created a year ago would keep
+        // reporting itself as days old forever, with no repeat rule on screen
+        // to explain why. Clearing it restores `createdAt` as the age source,
+        // which is exactly the state a never-recurring task is already in.
+        await saveTask(currentUserId, { ...currentTask, recurrence: null, occurrenceStart: null });
       } catch (error) {
         console.error("Failed to stop recurrence:", error);
         alert("Could not stop the recurrence.");
@@ -2037,7 +2049,7 @@ async function handleSetRecurrenceClick(taskId) {
   // "weekdays" needs a second prompt for which days; every other kind
   // derives its anchor from the due date inside the mutation below.
   let days = null;
-  if (kind === "weekdays") {
+  if (kind === RECURRENCE_KIND_WEEKDAYS) {
     const rawDays = prompt(
       "Which days? Comma-separated, 0=Sunday .. 6=Saturday (e.g. 1,3,5 for Mon/Wed/Fri)",
       Array.isArray(task.recurrence?.days) ? task.recurrence.days.join(",") : ""
@@ -2064,8 +2076,9 @@ async function handleSetRecurrenceClick(taskId) {
       const anchorDate = existingDueDate ?? localMidnight(new Date());
 
       let recurrence;
-      if (kind === "weekdays") recurrence = { kind, days };
-      else if (kind === "weekly" || kind === "monthly") recurrence = { kind, ...deriveAnchorFromDate(kind, anchorDate) };
+      if (kind === RECURRENCE_KIND_WEEKDAYS) recurrence = { kind, days };
+      else if (kind === RECURRENCE_KIND_WEEKLY || kind === RECURRENCE_KIND_MONTHLY)
+        recurrence = { kind, ...deriveAnchorFromDate(kind, anchorDate) };
       else recurrence = { kind }; // daily
 
       await saveTask(currentUserId, {

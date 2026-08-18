@@ -314,3 +314,112 @@ export function computeQuadrantRankMap(tasks, tagSettings) {
   }
   return rankMap;
 }
+
+// --- Tag rename/delete (step 17) --------------------------------------------
+// product-spec.md:226-234 — renaming or deleting a tag on the settings screen
+// rewrites it in every task TITLE that carries it (tags live inside titles,
+// step 2's decision; there is no separate registry). Everything below is
+// pure title/map arithmetic; app.js owns the confirm dialog, the
+// enqueueMutation/saveTask loop, and the in-memory undo snapshot (S17-1).
+
+// A tag token is matched at its OWN parsed offset, re-derived via matchAll
+// over the exact same TAG_PATTERN parseTags uses (S17-4, locked by the
+// orchestrator) — never a bare String.replace/split on the tag text, which
+// would let a rename of `#work` also corrupt `#workshop`. parseTags itself
+// only ever returns the matched strings, not their offsets, so this re-runs
+// the identical regex rather than inventing a second one; `\w+` being greedy
+// is exactly what makes "#workshop" one whole token instead of "#work" plus
+// leftover "shop", so filtering matches by `m[0] === tagName` already gets
+// the prefix hazard right for free.
+export function rewriteTagInTitle(title, tagName, replacement) {
+  const str = String(title ?? "");
+  const matches = [...str.matchAll(TAG_PATTERN)].filter((m) => m[0] === tagName);
+  if (matches.length === 0) return str;
+
+  let result = "";
+  let cursor = 0;
+  for (const match of matches) {
+    let removeStart = match.index;
+    let removeEnd = match.index + match[0].length;
+    let insertion = replacement;
+
+    if (replacement == null) {
+      // Delete: consume exactly ONE adjacent whitespace character so
+      // removing the token can never leave a double space or a leading/
+      // trailing one. Prefer the space AFTER the token (keeps the token's
+      // own leading separator as the sentence's word boundary when the tag
+      // sits mid-title); fall back to the space BEFORE when the tag is the
+      // last thing in the title, so a trailing tag doesn't leave a trailing
+      // space behind.
+      insertion = "";
+      if (str[removeEnd] === " ") {
+        removeEnd += 1;
+      } else if (str[removeStart - 1] === " ") {
+        removeStart -= 1;
+      }
+    }
+
+    result += str.slice(cursor, removeStart) + insertion;
+    cursor = removeEnd;
+  }
+  result += str.slice(cursor);
+  return result;
+}
+
+// S17-5 (locked by the orchestrator): pre-checks a WHOLE batch of title
+// rewrites against isValidTask()'s 1-1000 character cap
+// (taskService.js:32-34/177-179, firestore.rules:46-48) BEFORE any write —
+// rename/delete is all-or-nothing, never a partial sweep that leaves the tag
+// split across two spellings with nothing to show anything went wrong. The
+// lower bound matters because deleting a title's only tag can empty it; the
+// upper bound matters because renaming onto a longer name can push a title
+// over the cap. `replacement` is the new tag string (rename) or `null`
+// (delete) — one shared checker for both, since delete can only ever
+// shorten a title and the same check is simply a no-op there, not a reason
+// to write a second function. Returns every affected task's rewrite when the
+// whole batch is clean, or names the first task that would block it (the
+// caller aborts the whole operation on that single answer — it doesn't need
+// every other violator enumerated too).
+export function planTagRewrite(tasks, tagName, replacement) {
+  const entries = [];
+  for (const task of tasks) {
+    const previousTitle = task.title;
+    if (!parseTags(previousTitle).includes(tagName)) continue;
+    const newTitle = rewriteTagInTitle(previousTitle, tagName, replacement);
+    if (newTitle.length < 1 || newTitle.length > 1000) {
+      return { ok: false, entries: null, blockedTask: task, blockedTitle: newTitle };
+    }
+    entries.push({ taskId: task.id, previousTitle, newTitle });
+  }
+  return { ok: true, entries, blockedTask: null, blockedTitle: null };
+}
+
+// A rename target must itself be a single valid tag token — the same
+// `[#@]\w+` shape TAG_PATTERN matches, anchored to the WHOLE string (unlike
+// a bare `.match`, which would accept "ok #work junk" as containing a
+// match). Exported so app.js's rename-input validation shares this one
+// definition of "what a tag looks like" instead of writing a second regex
+// that answers the same question parseTags already owns.
+const TAG_TOKEN_PATTERN = /^[#@]\w+$/;
+export function isValidTagToken(token) {
+  return typeof token === "string" && TAG_TOKEN_PATTERN.test(token);
+}
+
+// S17-6/S17-7: moves a settings entry from `oldTagName` to `newTagName`
+// (rename), or drops it outright when `newTagName` is `null` (delete —
+// S17-7's "both, not one": the title token strip AND the settings-key
+// removal together, unlike step 14's "Clear colors" which deliberately
+// leaves an empty `{}` entry behind for a tag that still exists — step 17's
+// delete really does mean "remove this tag"). A rename that lands on an
+// ALREADY-configured destination tag merges titles (harmless duplicate
+// tokens, S17-6) but never merges settings: the destination's existing entry
+// wins and the source is dropped, so a rename can never clobber colors or a
+// quadrant a human already set up for the destination tag.
+export function moveTagSettingsEntry(tags, oldTagName, newTagName) {
+  const source = tags ?? {};
+  const { [oldTagName]: sourceEntry, ...rest } = source;
+  if (newTagName == null) return rest; // delete
+  if (Object.prototype.hasOwnProperty.call(rest, newTagName)) return rest; // destination already configured — it wins
+  if (sourceEntry === undefined) return rest; // nothing to move (old tag had no entry)
+  return { ...rest, [newTagName]: sourceEntry };
+}

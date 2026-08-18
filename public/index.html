@@ -428,6 +428,17 @@
       color: white;
       margin-bottom: 8px;
     }
+    /* Step 17: the single in-memory undo affordance — an amber warning color
+       (distinct from every other button here) so it reads as "time-limited",
+       matching its own honest "lost on reload" label. */
+    #settings-undo-btn {
+      display: block;
+      background-color: #b45309;
+      color: white;
+      font-size: 13px;
+      padding: 6px 10px;
+      margin: 0 0 12px;
+    }
     li.tag-setting {
       display: flex;
       align-items: center;
@@ -491,6 +502,26 @@
       border: 1px solid #9ca3af;
       background-color: white;
       color: #1f2937;
+    }
+    /* Step 17: Rename/Delete — two separate destructive-ish actions (see
+       render.js's comment on why they're not one toggle), styled apart from
+       "Clear colors" (which only ever touches colors, never the tag itself)
+       so the two very different blast radii read differently at a glance. */
+    .tag-setting__rename-btn {
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 500;
+      background-color: #2563eb;
+      color: white;
+      flex-shrink: 0;
+    }
+    .tag-setting__delete-btn {
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 500;
+      background-color: #b91c1c;
+      color: white;
+      flex-shrink: 0;
     }
   </style>
 </head>
@@ -606,6 +637,12 @@
       <button type="button" id="settings-back-btn">← Back</button>
       <h2>Tag settings</h2>
       <p id="settings-count"></p>
+      <!-- Step 17 (S17-1): a single in-memory undo slot for the last tag
+           rename/delete — hidden whenever nothing is undoable. Its own label
+           says "lost on reload" so the affordance never implies a durable
+           history this app doesn't have (there is no operation log; this is
+           scoped to exactly this one action per PROGRESS.md's Decisions). -->
+      <button type="button" id="settings-undo-btn" hidden></button>
       <ul id="settings-list"></ul>
     </div>
   </div>

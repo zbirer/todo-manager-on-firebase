@@ -1,8 +1,8 @@
 # Progress
 
-Last updated: 2026-08-18 — **Steps 1–16 implemented.** Step 17 (Tag
-rename/delete) is next. No signed-in browser walkthrough has been reported
-back for any step yet — the click-path below is still the first thing to run.
+Last updated: 2026-08-18 — **Steps 1–17 implemented.** Step 18 (Recurrence)
+is next. No signed-in browser walkthrough has been reported back for any step
+yet — the click-path below is still the first thing to run.
 
 ## Step table
 
@@ -24,8 +24,8 @@ back for any step yet — the click-path below is still the first thing to run.
 | 14 | Tag colors | done |
 | 15 | Quadrant mapping | done |
 | 16 | Priority ordering | done |
-| 17 | Tag rename/delete | next |
-| 18 | Recurrence | planned |
+| 17 | Tag rename/delete | done |
+| 18 | Recurrence | next |
 | 19 | Search — basic | planned |
 | 20 | Search — advanced | planned |
 | 21 | Export / import | planned |
@@ -45,88 +45,41 @@ release, and the drop still writes `order` and alerts naming the dragged
 task's own resolved quadrant, per R5's explicit "write, never refuse, never
 silently snap back."
 
-## Resume here — step 17 (Tag rename/delete)
+## Step 17 (Tag rename/delete) — done
 
-**Exact next action:** implement step 17, per product-spec.md §7's last
-bullet ("Renaming & Deleting Tags Propagates," lines 226–234). Tags live
-*inside task titles* (step 2's decision, never a separate field) — renaming
-or deleting a tag on the settings screen (`public/index.html`'s
-`#settings-view`, `render.js`'s `renderSettings`/`createSettingsElement`)
-means **rewriting the title text of every non-deleted task that carries that
-exact tag token**, not touching a registry that lives independently of the
-tasks. This is the first step whose one user action fans out into an
-unbounded number of task document writes, and the first to require an
-"undo" the app has never needed before.
+Implemented exactly per the orchestrator's locked decisions (S17-1–S17-9, see
+the Decisions log's step 17 entries below). Renaming/deleting a tag on the
+Tag Settings screen (`.tag-setting__rename-btn`/`.tag-setting__delete-btn`,
+render.js) rewrites the tag's exact token in every **non-deleted** task's
+title via offset-based `matchAll` substitution (`rewriteTagInTitle`,
+tagColors.js) — never a bare string replace, so `#work` can never corrupt
+`#workshop`. The whole batch is pre-checked against the 1–1000 character cap
+before any write (`planTagRewrite`); a single blocked task aborts the entire
+operation with nothing written. The settings-map entry moves (rename) or is
+removed outright (delete) via `moveTagSettingsEntry`, with the destination's
+existing entry always winning over the source on a rename. Both actions are
+confirmed with the exact affected-task count and are undoable via a single
+module-level, in-memory, non-persisted snapshot (`tagUndoSnapshot`, app.js)
+that replays every task's previous title verbatim and restores the whole
+prior settings document — never a reverse rename.
 
-- **Matching a tag token.** Use `tagColors.js`'s existing `TAG_PATTERN`
-  (`/([#@]\w+)/g`, tagColors.js:20) / `parseTags` (tagColors.js:43) — the one
-  place that already decides what counts as a tag (step 2's decision, step
-  14's D11 restated). Do not write a second regex: renaming `#p1` must not
-  also match inside `#p10`, and `parseTags`'s word-boundary behavior
-  (`\w+`) already gets this right for free.
-- **The 1000-char pre-check and abort-whole-batch rule (locked by the
-  orchestrator ahead of this step — do not re-litigate):** replacing a short
-  tag name with a longer one can push a title past `TITLE_MAX_LENGTH`
-  (app.js:105, currently `1000` — the same cap step 2's inline title editor
-  already enforces at app.js:1071-1072/1422-1423). Before writing **any**
-  task, compute every affected task's new title and check **all of them**
-  against the cap first. If even ONE would exceed it, **abort the entire
-  rename with no writes at all** — never rename most tasks and silently skip
-  the ones that would overflow. A partial rename is worse than useless here:
-  the tag would end up split across two spellings in the live task set with
-  no indication anything went wrong, and product-spec.md's own "confirmed
-  before it runs and can be undone afterwards" framing only makes sense for
-  an all-or-nothing action. Deleting a tag (stripping the token out of the
-  title) can only ever shorten a title, so the same pre-check is a no-op for
-  delete — reuse one shared pre-check function for both anyway, don't write
-  a second one that only handles rename.
-- **The batch write itself.** One `enqueueMutation` call whose body loops
-  over every affected task and writes each with a plain per-document
-  `saveTask(uid, {...task, title: newTitle})` — the exact shape step 8's
-  cascade delete and step 11's reparent already established for "one user
-  action, many whole-document writes, one queued mutation, one `finally {
-  refreshTasks() }`" (see either step's Decisions entries). There is no
-  Firestore transaction anywhere in this codebase and no reason to introduce
-  one here — the pre-check above is what stands in for atomicity, not a
-  database transaction.
-- **The settings-map side of a rename/delete.** `tagSettings.tags` (step 14's
-  D1 shape, `{ [tagName]: { fg, bg, quadrant } }`) is keyed by the OLD tag
-  name — a rename must move that entry to the NEW key (carrying `fg`/`bg`/
-  `quadrant` across untouched, the same "spread the existing entry" pattern
-  `handleTagColorChange`/`handleTagQuadrantChange` already use), and a delete
-  must remove the key outright. This is the step step 14's D13 explicitly
-  deferred to: "Clear colors" (step 14) leaves an empty `{}` entry behind on
-  purpose because *that* action isn't "remove this tag," but step 17's
-  delete genuinely is — do not reuse `handleTagClearColors` for this.
-- **"Confirmed before it runs."** A `confirm()` naming the tag and the
-  affected task count, matching every existing destructive-action precedent
-  in this app (step 3/8/9's delete confirms, all of which name a concrete
-  count rather than a generic warning).
-- **"Can be undone afterwards" — genuinely unresolved, not a wiring task.**
-  This codebase has no undo/history mechanism anywhere today. Before writing
-  any code, decide and RECORD (as a new Decision, not left implicit) what
-  "undo" means here: e.g. a session-lifetime-only "Undo" affordance that
-  simply re-runs the inverse rename/re-insertion using an in-memory snapshot
-  taken right before the batch write (cheap, matches this app's "everything
-  refetches from Firestore, nothing is durable client state" architecture,
-  but does not survive a reload) versus something durable (out of scope
-  without a real design pass — this app has no operation log). Do not build
-  a general-purpose undo stack for the whole app; scope it to exactly this
-  one action, and say so explicitly in the Decision that locks it in.
-- **Tags inside a task's `note` field never match.** product-spec.md §4 is
-  explicit that "the note never carries tags" — the rename/delete sweep
-  scans `task.title` only, never `task.note`, even if a user happens to type
-  `#something`-shaped text into a note.
+## Resume here — step 18 (Recurrence)
 
-**Files likely touched:** `public/app.js` (the batch rename/delete handler,
-the pre-check, the settings-map key move, the confirm dialog, and whatever
-the recorded undo decision requires), `public/render.js`/`index.html` (a
-Rename/Delete affordance on each settings row, alongside the existing
-Text/Background/Quadrant/Clear-colors controls). No change expected to
-`public/taskService.js`, `firestore.rules`, or `firestore.indexes.json` —
-`isValidTask()`'s title cap is already enforced client-side by the pre-check
-above, and every write is still a whole-document `saveTask` no different in
-shape from every other mutation in this app.
+**Exact next action:** implement step 18 per product-spec.md §5's recurrence
+bullet. This is the first step to give a task a schedule that regenerates it
+after completion — read product-spec.md §5 in full before writing code, and
+re-check step 13 (D1)'s note that "no partial groundwork" for recurrence was
+laid during Dates. Decide and record (as new Decisions, not left implicit):
+what fields a recurrence rule needs on a task document, whether completing a
+recurring task writes a NEW task or resets the same document, how a
+recurring task's `dueDate` advances, and how this interacts with the 7-level
+hierarchy / cascade-complete / cascade-delete machinery already in place (a
+recurring task with sub-tasks is not addressed by the spec's own wording — do
+not guess silently, record the reading taken). Also confirm whether
+`firestore.rules`/`firestore.indexes.json` need a new field validated —
+unlike steps 14–17, this one plausibly does add a genuinely new task field,
+so don't assume "no rules change" without actually reading `isValidTask()`
+first, the same way every prior step's "not really a decision" entries did.
 
 **No step has been confirmed in a signed-in browser yet.** Everything below marked
 "verified" was verified unsigned-in, by driving the real modules with synthetic
@@ -474,6 +427,44 @@ a bogus `does not provide an export named ...` error and cost real time once alr
   `weekStart` itself is still never written (that's step 20's field). No
   change to `settingsService.js` or `store.js` — the whole-document write path
   and the `tagSettings` cache already carried this without modification.
+
+**Files touched (step 17):**
+- `public/tagColors.js` — a new "Tag rename/delete" section: `rewriteTagInTitle`
+  (S17-4, offset-based `matchAll` substitution, never a bare string replace —
+  the prefix hazard `#work`/`#workshop` is impossible by construction since
+  it filters matches by exact token equality); `planTagRewrite` (S17-5, the
+  whole-batch 1–1000 char pre-check, shared by rename and delete); the
+  private `TAG_TOKEN_PATTERN`/exported `isValidTagToken` (rename-input
+  validation, one definition of "what a tag looks like" shared with
+  `parseTags`/`TAG_PATTERN`); `moveTagSettingsEntry` (S17-6/S17-7, the
+  settings-key move/removal, destination-wins on a rename).
+- `public/app.js` — the module-level `tagUndoSnapshot` (S17-1/S17-3, the one
+  in-memory undo slot, cleared alongside `invalidate()` in the sign-out
+  path); `handleTagRenameClick`/`handleTagDeleteClick` (prompt/confirm →
+  click-time `planTagRewrite` → confirm naming the exact count (S17-9) →
+  `enqueueMutation` → a fresh run-time `planTagRewrite` → the snapshot taken
+  BEFORE the first write (S17-8) → a sequential `saveTask` loop, the exact
+  idiom step 8's cascade delete established → `saveSettings` moving/removing
+  the settings entry → `finally { refreshTasks() }`); `handleTagUndoClick`
+  (S17-2/S17-3, replays `previousTitle` verbatim per task and restores
+  `previousTagSettings` wholesale, consuming the slot on entry regardless of
+  outcome); two new branches in the delegated `click` listener
+  (`.tag-setting__rename-btn`/`.tag-setting__delete-btn`), placed alongside
+  the existing `.tag-setting__clear-btn` branch, before the code that
+  requires a `data-task-id`; `renderSettingsView` grew the Undo button's
+  `hidden`/text sync.
+- `public/render.js` — `createSettingsElement` grows two buttons, Rename and
+  Delete, appended after the quadrant `<select>` (no listeners of their own —
+  same event-delegation rule as every other settings-row control).
+- `public/index.html` — `.tag-setting__rename-btn`/`.tag-setting__delete-btn`
+  CSS (styled apart from `.tag-setting__clear-btn`, which never touches the
+  tag itself); `#settings-undo-btn` (hidden by default, an amber button
+  above `#settings-list`) and its CSS.
+- No change to `public/taskService.js`, `firestore.rules`, or
+  `firestore.indexes.json` — every write is still a whole-document `saveTask`/
+  `saveSettings`, no different in shape from every other mutation in this
+  app, and the settings entry's shape is unchanged (rename/delete only ever
+  move or remove a whole entry, never touch its internal fields).
 
 **Verified (actually exercised in a real browser at localhost:5050, unsigned-in, by
 driving the real modules directly):**
@@ -1259,6 +1250,77 @@ driving the real modules directly):**
   (no click-to-open, no keyboard/mouse option selection) — same limitation
   step 14 recorded for the native color picker. Its `change` event was
   dispatched directly, and the handler chain from there is verified.
+- **Step 17 (Tag rename/delete), verified unsigned-in against the real
+  `tagColors.js` and the real `render.js`/`app.js` DOM wiring already loaded
+  by the running page (a stale-module-cache issue like the one this file's
+  own click-path section warns about was hit and fixed by opening a genuinely
+  fresh tab — a `navigate` call on an already-loaded tab did not reliably
+  bust the browser's disk cache for these unchanged-URL ES modules, even with
+  a simulated hard-reload key combo; a brand-new tab's first load was clean):**
+  - **S17-4 (prefix hazard), the highest-risk item in this step — proven with
+    real computed values:** `rewriteTagInTitle("Fix #work before the
+    #workshop", "#work", "#job")` returned exactly `"Fix #job before the
+    #workshop"` — `#workshop` untouched. Whitespace collapse on delete proven
+    at all three positions in a title: mid ("Buy #shopping milk" → "Buy
+    milk"), start ("#shopping Buy milk" → "Buy milk"), and end ("Buy milk
+    #shopping" → "Buy milk") — no double space, no leading/trailing space in
+    any case.
+  - **RTL, per this step's own required proof:** a Hebrew title carrying two
+    tags (`"לסיים את הדוח #urgent לפני הפגישה @office"`) had `#urgent` renamed
+    to `#pressing` in place with `@office` untouched, and had `@office`
+    deleted cleanly with the trailing space collapsed — both against string
+    offsets, unaffected by the tags' left-to-right visual rendering (the same
+    hazard D2/step 14 already documented for color resolution).
+  - **S17-5 (whole-batch pre-check), proven with a real constructed overflow:**
+    a 3-task batch where one task's rename would produce a 1032-character
+    title returned `{ ok: false, blockedTask: that task, blockedTitle.length:
+    1032 }` from `planTagRewrite` — the function returns before ever
+    considering the remaining tasks, so nothing partial is ever handed to a
+    caller. The identical batch with a same-length replacement tag correctly
+    returned `{ ok: true, entries: [exactly the 2 real carriers] }` — the
+    third, non-carrying task was correctly excluded. Delete's only possible
+    violation (the lower bound) was proven separately: deleting a title's
+    only tag (`"#onlytag"`) produced `newTitle: ""`, correctly blocked.
+  - **S17-6 (merge on rename), proven concretely:** renaming `#personal` to
+    `#work` in a title that already carried `#work` produced `"#work meeting
+    #work note"` — a genuine duplicate token, left uncleaned, exactly as
+    specified. `moveTagSettingsEntry` proven both directions: moving `#a`'s
+    entry to an unoccupied `#b` carried `fg`/`bg` across intact; moving `#a`
+    onto an ALREADY-configured `#b` left `#b`'s own pre-existing entry
+    completely unchanged (`#a`'s entry silently dropped) — the destination
+    genuinely wins, not just asserted to.
+  - **S17-7 (delete removes the settings entry), proven:**
+    `moveTagSettingsEntry(tags, "#a", null)` removed exactly the `#a` key and
+    left an unrelated `#other` entry untouched.
+  - **Rename-input validation (`isValidTagToken`):** `"#work"`/
+    `"@home_office2"` accepted; `"#work stuff"` (embedded space), `"work"`
+    (no sigil), and `""` all rejected.
+  - **Reachability trace, driven for real:** with `#task-section` made
+    visible and `render.js`'s own `renderSettings` called directly into the
+    real `#settings-list` (the identical function app.js's real
+    `renderSettingsView` calls), the rendered rows carried
+    `.tag-setting__rename-btn`/`.tag-setting__delete-btn` with correct
+    `aria-label`s, alongside the pre-existing color/quadrant controls
+    unchanged (a regression check — `#work`'s stored `#ffffff`/`#111111`
+    colors round-tripped into the inputs correctly). A REAL `click`
+    `MouseEvent`, dispatched on the actual rendered Rename button and
+    bubbled to `#task-section`, reached the real delegated listener with
+    zero console errors and — with `window.prompt`/`window.confirm`/
+    `window.alert` instrumented to record any call — produced **zero**
+    calls, proving the click resolved `closest("li").dataset.tagName`
+    correctly and reached `handleTagRenameClick`/`handleTagDeleteClick`,
+    which then hit the unsigned-in `if (!userId) return` guard before ever
+    prompting — the same "reaches the guard, guard fires first" shape step
+    11/16's write-time alerts already established as unsigned-in-unreachable
+    past that point. The Undo button (`#settings-undo-btn`) was confirmed
+    hidden by default and a real click on it while no snapshot exists is a
+    verified no-op (`handleTagUndoClick`'s own `!snapshot` guard), consistent
+    with never having run a real rename/delete in this unsigned-in session.
+  - **Not executable signed-out, same limitation as every step since 11:**
+    the actual `saveTask`/`saveSettings` calls, the real `prompt()`/
+    `confirm()` dialogs, and the actual undo replay were never reached,
+    because `enqueueMutation`'s/the handlers' own `if (!userId) return`
+    guards fire first and this session never set a fake signed-in uid.
 
 ## Decisions
 
@@ -2294,6 +2356,115 @@ driving the real modules directly):**
   settings-schema table**, including the load-bearing distinction that an
   *absent* `quadrant` (unmapped, sorts last) is not the same as
   `'not-urgent-not-important'` (mapped, ranks above unmapped).
+
+- **step 17 (S17-1, undo shape — locked by the orchestrator, not
+  re-litigated)** — a single module-level variable in app.js
+  (`tagUndoSnapshot`), never persisted, never a stack: `{ kind:
+  'rename'|'delete', tagName, entries: [{taskId, previousTitle}],
+  previousTagSettings }`. Cleared alongside `store.js`'s own `invalidate()`
+  in the sign-out path (monitorAuthState) — a second account signing in on
+  the same page must never see an "Undo" offering to rewrite ITS tasks with
+  the FIRST account's title snapshot. The Undo button's own label
+  (`Undo renaming "X" (lost on reload)`) says so explicitly rather than
+  implying a durable history this app doesn't have.
+- **step 17 (S17-2/S17-3, undo semantics — locked)** — Undo replays every
+  entry's `previousTitle` VERBATIM (never a reverse rename/re-insertion,
+  which would also rewrite a task that legitimately already carried the
+  destination tag by the time Undo runs) and restores `previousTagSettings`
+  WHOLESALE — never re-deriving the old settings shape from the new one.
+  Held as a direct object reference, not a deep clone: safe only because
+  every mutator in this file (`updateTagSettings` included) builds a NEW
+  object via spread rather than mutating one in place, so the snapshot can
+  never be silently corrupted by a later, unrelated settings write. One
+  slot, no stack (S17-3): a second tag operation replaces whatever the first
+  left behind, and performing Undo consumes the slot immediately on entry
+  (before the write even runs), so a failed Undo does not get a second Undo
+  pointed at it.
+- **step 17 (S17-4, token matching — locked)** — `rewriteTagInTitle`
+  (tagColors.js) re-derives offsets via `matchAll` over the exact same
+  `TAG_PATTERN` `parseTags` uses, then filters matches by exact string
+  equality to the target tag — never a bare `String.replace`/`split` on the
+  tag text. This gets the `#work`/`#workshop` prefix hazard right for free,
+  the same way `parseTags`'s own `\w+` word-boundary already does, rather
+  than needing a second defense. Delete removes the matched token plus
+  exactly one adjacent whitespace character — preferring the trailing space
+  (keeps the leading separator as the sentence's word boundary when the tag
+  sits mid-title) and falling back to the leading space only when the tag is
+  the last thing in the title — so a deletion can never leave a double space
+  or a leading/trailing one. Verified with real computed values at all three
+  tag positions (start/mid/end) and against a real RTL title.
+- **step 17 (S17-5, whole-batch pre-check — locked)** — `planTagRewrite`
+  (tagColors.js) checks EVERY affected task's rewritten title against the
+  1–1000 character cap (`taskService.js:32-34`/`177-179`,
+  `firestore.rules:46-48`) before the caller writes anything, returning
+  either every entry or the single task that blocks the whole batch — never
+  a partial result. One shared function for rename and delete: delete can
+  only ever shorten a title, so the cap's upper half is a structural no-op
+  for it, which is not a reason to fork a second checker. Verified with a
+  constructed 1032-character overflow (rename) and an empty-after-delete
+  title (the tag was a title's only content) — both correctly blocked, with
+  the exact blocking task named.
+- **step 17 (S17-6/S17-7, the settings-map move — locked)** —
+  `moveTagSettingsEntry` (tagColors.js) is the ONE function for both a
+  rename's move and a delete's removal (`newTagName: null` triggers
+  removal), mirroring D1's shared-entry-object precedent from step 14. A
+  rename that lands on an ALREADY-configured destination tag merges titles
+  (duplicate tokens are left standing, not cleaned up — colour is
+  last-typed-colored-tag-wins and quadrant is an OR-across-tags, so a
+  duplicate token is harmless to both) but never merges settings: the
+  destination's existing entry wins outright and the source entry is
+  dropped, verified concretely (a pre-configured `#b` survived a rename of
+  `#a` onto it completely unchanged). Delete is "both, not one" (S17-7): the
+  title token strip AND the settings-key removal together — a deliberate
+  contrast with step 14's D13 "Clear colors," which leaves an empty `{}`
+  entry behind on purpose because that action isn't "remove this tag" and
+  step 17's delete genuinely is.
+- **step 17 (S17-8, the batch write — locked)** — one `enqueueMutation`, a
+  sequential per-task `saveTask` loop, the exact idiom step 8's cascade
+  delete established (app.js:911-937) — no `writeBatch`, nothing in this
+  codebase uses one. The undo snapshot is captured BEFORE the loop's first
+  write, not after the loop completes: a mid-batch network failure still
+  leaves a CORRECT Undo in place, since replaying `previousTitle` for a task
+  this attempt never got to write is simply a no-op for that task. This is
+  what makes the catch block's "click Undo to restore every title this
+  touched" message honest rather than aspirational, and it is why the
+  failure alert points at Undo instead of apologizing generically the way
+  step 8/11's cascade-failure alerts do (those steps have no undo to point
+  at; this one does).
+- **step 17 (S17-9, the confirm — locked)** — `confirm()` names the exact
+  affected-task count (never a generic warning), matching every existing
+  destructive-action precedent in this app. When zero live tasks carry the
+  tag, the confirm says so explicitly rather than reading "0 tasks" as a
+  degenerate case — rename is still a no-op-for-tasks-but-not-for-settings
+  per the spec's own wording (a rename with no carrier still moves the
+  settings entry), so the confirm still needs to run and Undo still needs a
+  valid snapshot even when `entries.length === 0`.
+- **step 17 (mine — the sweep is scoped to non-deleted tasks only)** — an
+  explicit reading of product-spec.md:226-234's "every task that uses it,"
+  recorded rather than left as an implementation accident. Matches D5 (step
+  14)'s own "live vocabulary" reasoning for which tags even list on the
+  settings screen: a tag surviving only on a trashed task isn't part of it,
+  and silently rewriting a trashed title the user can't currently see (and
+  might still restore later, in whichever form it was deleted in) would be
+  an invisible side effect of an action the confirm dialog didn't warn about.
+  If a later step wants trashed titles included, this is the entry to argue
+  with — it would also have to decide what Undo does about a task that gets
+  restored from Trash in between the rename and the Undo.
+- **step 17 (mine — rename-input validation surfaces as `alert()`s, not
+  silent no-ops)** — an invalid new tag name (fails `isValidTagToken`) or a
+  new name identical to the old one each produce a specific `alert()` rather
+  than silently doing nothing, matching this app's existing habit (title/
+  note/tag-count length checks all alert with a specific reason rather than
+  swallowing the rejection).
+- **step 17 (not really a decision) — no change to `firestore.rules`,
+  `firestore.indexes.json`, or `public/taskService.js`.** Every write this
+  step adds is still a whole-document `saveTask`/`saveSettings`, identical in
+  shape to every other mutation in this app; the settings entry's shape is
+  unchanged (rename/delete only ever move or remove a whole entry, never
+  touch `fg`/`bg`/`quadrant` inside one), and `isValidTask()`'s 1–1000 title
+  cap is enforced client-side by `planTagRewrite` before any write, the same
+  belt-and-suspenders relationship every other title-length check in this
+  codebase already has with the rules.
 
 ## Open items (not steps)
 

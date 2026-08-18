@@ -24,6 +24,13 @@ import {
   computeQuadrantRankMap,
   resolveTaskQuadrant,
   describeQuadrant,
+  // Step 17 (Tag rename/delete): planTagRewrite/isValidTagToken/
+  // moveTagSettingsEntry are the pure title/map arithmetic (S17-4/S17-5/
+  // S17-6/S17-7) — this file only owns the confirm dialog, the
+  // enqueueMutation/saveTask loop, and the in-memory undo snapshot.
+  planTagRewrite,
+  isValidTagToken,
+  moveTagSettingsEntry,
 } from "./tagColors.js";
 // Step 15 (Quadrant mapping): app.js's own write handler below
 // (handleTagQuadrantChange) never needs to VALIDATE the incoming value — it
@@ -245,6 +252,9 @@ const settingsBtn = document.getElementById("settings-btn");
 const settingsBackBtn = document.getElementById("settings-back-btn");
 const settingsCountText = document.getElementById("settings-count");
 const settingsList = document.getElementById("settings-list");
+// Step 17 (S17-1): the one Undo affordance for the last tag rename/delete —
+// see tagUndoSnapshot's own comment below for exactly what it holds.
+const settingsUndoBtn = document.getElementById("settings-undo-btn");
 
 // 1b. Task context menu (step 8) — right-click or long-press on a row.
 // `taskMenu` is one shared element (declared in index.html, outside both
@@ -382,6 +392,11 @@ overdueBtn.addEventListener("click", () => switchView("overdue"));
 overdueBackBtn.addEventListener("click", () => switchView("main"));
 settingsBtn.addEventListener("click", () => switchView("settings"));
 settingsBackBtn.addEventListener("click", () => switchView("main"));
+// Step 17: a single static button (not per-row, so it lives outside the
+// delegated #task-section listeners below) — see handleTagUndoClick.
+settingsUndoBtn.addEventListener("click", () => {
+  handleTagUndoClick();
+});
 
 function renderMainView() {
   const showCompleted = showCompletedToggle.checked;
@@ -528,6 +543,16 @@ function renderSettingsView() {
       ? "No tags yet — add a #tag or @tag to a task title."
       : `${tagNames.length} tag${tagNames.length === 1 ? "" : "s"}`;
   renderSettings(settingsList, tagNames, tagSettings);
+
+  // Step 17 (S17-1): the Undo button only exists while the in-memory
+  // snapshot exists — its own text names the exact action and is explicit
+  // that reloading (or signing out) loses it, rather than implying a
+  // durable history this app doesn't have.
+  settingsUndoBtn.hidden = !tagUndoSnapshot;
+  if (tagUndoSnapshot) {
+    const verb = tagUndoSnapshot.kind === "rename" ? "renaming" : "deleting";
+    settingsUndoBtn.textContent = `Undo ${verb} "${tagUndoSnapshot.tagName}" (lost on reload)`;
+  }
 }
 
 // Picks which deleted documents to permanently purge once the Trash holds
@@ -788,6 +813,23 @@ taskSection.addEventListener("click", async (event) => {
   if (clearColorsBtn) {
     const tagName = clearColorsBtn.closest("li")?.dataset.tagName;
     if (tagName) await handleTagClearColors(tagName);
+    return;
+  }
+
+  // Step 17: Rename/Delete, same "checked before a data-task-id is
+  // required" placement as every other settings-row branch above (a
+  // settings row has no task id at all).
+  const renameTagBtn = event.target.closest(".tag-setting__rename-btn");
+  if (renameTagBtn) {
+    const tagName = renameTagBtn.closest("li")?.dataset.tagName;
+    if (tagName) await handleTagRenameClick(tagName);
+    return;
+  }
+
+  const deleteTagBtn = event.target.closest(".tag-setting__delete-btn");
+  if (deleteTagBtn) {
+    const tagName = deleteTagBtn.closest("li")?.dataset.tagName;
+    if (tagName) await handleTagDeleteClick(tagName);
     return;
   }
 
@@ -1294,6 +1336,223 @@ async function handleTagQuadrantChange(tagName, quadrant) {
     }),
     "Could not save the tag quadrant."
   );
+}
+
+// Step 17 (S17-1/S17-3): the ONE undo slot for the last tag rename/delete —
+// a module-level variable, not a stack, not persisted anywhere. Lost on
+// reload (nothing here survives a page load) and cleared on sign-out
+// (alongside store.js's own invalidate() — see the monitorAuthState wiring
+// below). A new rename/delete silently replaces whatever this held; the
+// Undo button itself consumes it the moment it runs (handleTagUndoClick).
+// Shape: `{ kind: 'rename'|'delete', tagName, entries: [{taskId,
+// previousTitle}], previousTagSettings }` — `tagName` is the NEW name for a
+// rename (what the Undo button names) and the deleted name for a delete.
+// `previousTagSettings` is a direct reference to the settings object
+// getTagSettings() returned right before the write — safe to hold without
+// cloning because every mutator in this file (updateTagSettings included)
+// only ever builds a NEW object via spread, never mutates one in place.
+let tagUndoSnapshot = null;
+
+// Step 17: renames a tag across every non-deleted task's title (S17-4's
+// literal, offset-based token substitution — never a bare string replace)
+// and moves its settings entry to the new key (S17-6). Deleted tasks are
+// deliberately excluded from the sweep, matching D5's "the live vocabulary"
+// reasoning for which tags even list on this screen — a tag surviving only
+// on a trashed task isn't part of it, and rewriting a trashed title the user
+// can't currently see would be an invisible side effect.
+async function handleTagRenameClick(oldTagName) {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
+  const rawInput = prompt(`Rename "${oldTagName}" to:`, oldTagName);
+  if (rawInput == null) return; // cancelled
+  const newTagName = rawInput.trim();
+  if (!newTagName) return;
+
+  if (!isValidTagToken(newTagName)) {
+    alert(`"${newTagName}" isn't a valid tag — a tag is # or @ followed by letters, numbers, or underscores, with nothing else.`);
+    return;
+  }
+  if (newTagName === oldTagName) {
+    alert("New name must be different from the current name.");
+    return;
+  }
+
+  // S17-5: the whole batch is checked before anything runs, so the confirm
+  // below only ever offers an operation that CAN fully succeed. Renaming is
+  // explicitly a no-op for tasks (but not for settings) when no task carries
+  // the tag — the spec's own wording for this ("the settings entry still
+  // moves") — so an empty `entries` array is a valid, non-blocked outcome.
+  const nonDeletedTasks = getTasks().filter((t) => !t.deleted);
+  const plan = planTagRewrite(nonDeletedTasks, oldTagName, newTagName);
+  if (!plan.ok) {
+    alert(
+      `Can't rename "${oldTagName}": "${plan.blockedTask.title}" would become ${plan.blockedTitle.length} characters, over the 1000-character limit. Nothing was changed.`
+    );
+    return;
+  }
+
+  const count = plan.entries.length;
+  const confirmMessage =
+    (count === 0
+      ? `Rename tag "${oldTagName}" to "${newTagName}"? No current task carries this tag, but its settings will move to the new name.`
+      : `Rename "${oldTagName}" to "${newTagName}" in ${count} task${count === 1 ? "" : "s"}?`) +
+    " You can undo this until you reload or sign out.";
+  if (!confirm(confirmMessage)) return;
+
+  await enqueueMutation(async () => {
+    const currentUserId = getCurrentUserId();
+    if (!currentUserId) return;
+
+    // Re-derive fresh at run time (this file's standing rule) rather than
+    // trusting the click-time plan, which could be stale if another queued
+    // mutation ran first.
+    const currentTasks = getTasks().filter((t) => !t.deleted);
+    const currentPlan = planTagRewrite(currentTasks, oldTagName, newTagName);
+    if (!currentPlan.ok) {
+      alert(
+        `Can't rename "${oldTagName}": "${currentPlan.blockedTask.title}" would exceed the 1000-character limit. Nothing was changed.`
+      );
+      return;
+    }
+
+    const previousTagSettings = getTagSettings();
+
+    // S17-8: the snapshot is taken BEFORE the first write, not after the
+    // loop finishes — so a mid-batch network failure is already covered by
+    // Undo (replaying a task's previousTitle is a harmless no-op for any
+    // task this attempt never got to), which is what makes the catch
+    // block's "click Undo" below honest rather than aspirational.
+    tagUndoSnapshot = {
+      kind: "rename",
+      tagName: newTagName,
+      entries: currentPlan.entries.map((e) => ({ taskId: e.taskId, previousTitle: e.previousTitle })),
+      previousTagSettings,
+    };
+
+    try {
+      // S17-8: one enqueueMutation, a sequential saveTask loop — the exact
+      // idiom step 8's cascade delete already established (app.js:911-937).
+      for (const entry of currentPlan.entries) {
+        const currentTask = getTasks().find((t) => t.id === entry.taskId);
+        if (!currentTask || currentTask.deleted) continue; // vanished since the plan was built — nothing to write
+        await saveTask(currentUserId, { ...currentTask, title: entry.newTitle });
+      }
+      await saveSettings(currentUserId, {
+        ...previousTagSettings,
+        tags: moveTagSettingsEntry(previousTagSettings.tags ?? {}, oldTagName, newTagName),
+      });
+    } catch (error) {
+      console.error("Failed to rename tag:", error);
+      alert(`Could not finish renaming "${oldTagName}". Click Undo to restore every title this rename touched.`);
+    } finally {
+      await refreshTasks();
+    }
+  });
+}
+
+// Step 17 (S17-7): deletes a tag outright — strips its token from every
+// non-deleted task's title AND removes its settings entry, both in one
+// operation (unlike step 14's "Clear colors", which deliberately leaves an
+// empty entry behind for a different reason — see moveTagSettingsEntry's own
+// comment). Same confirm/pre-check/snapshot/enqueueMutation shape as rename.
+async function handleTagDeleteClick(tagName) {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
+  const nonDeletedTasks = getTasks().filter((t) => !t.deleted);
+  const plan = planTagRewrite(nonDeletedTasks, tagName, null);
+  if (!plan.ok) {
+    // Delete can only ever shorten a title (S17-5), so the only possible
+    // block here is the LOWER bound: this tag was the title's only content.
+    alert(
+      `Can't delete "${tagName}": removing it from "${plan.blockedTask.title}" would leave an empty title. Nothing was changed.`
+    );
+    return;
+  }
+
+  const count = plan.entries.length;
+  const confirmMessage =
+    (count === 0
+      ? `Delete tag "${tagName}"? No current task carries it, but its settings will be removed.`
+      : `Delete tag "${tagName}" from ${count} task${count === 1 ? "" : "s"}?`) +
+    " You can undo this until you reload or sign out.";
+  if (!confirm(confirmMessage)) return;
+
+  await enqueueMutation(async () => {
+    const currentUserId = getCurrentUserId();
+    if (!currentUserId) return;
+
+    const currentTasks = getTasks().filter((t) => !t.deleted);
+    const currentPlan = planTagRewrite(currentTasks, tagName, null);
+    if (!currentPlan.ok) {
+      alert(
+        `Can't delete "${tagName}": removing it from "${currentPlan.blockedTask.title}" would leave an empty title. Nothing was changed.`
+      );
+      return;
+    }
+
+    const previousTagSettings = getTagSettings();
+
+    // S17-8: snapshot before the first write — see handleTagRenameClick's
+    // identical comment for why.
+    tagUndoSnapshot = {
+      kind: "delete",
+      tagName,
+      entries: currentPlan.entries.map((e) => ({ taskId: e.taskId, previousTitle: e.previousTitle })),
+      previousTagSettings,
+    };
+
+    try {
+      for (const entry of currentPlan.entries) {
+        const currentTask = getTasks().find((t) => t.id === entry.taskId);
+        if (!currentTask || currentTask.deleted) continue;
+        await saveTask(currentUserId, { ...currentTask, title: entry.newTitle });
+      }
+      await saveSettings(currentUserId, {
+        ...previousTagSettings,
+        tags: moveTagSettingsEntry(previousTagSettings.tags ?? {}, tagName, null),
+      });
+    } catch (error) {
+      console.error("Failed to delete tag:", error);
+      alert(`Could not finish deleting "${tagName}". Click Undo to restore every title this touched.`);
+    } finally {
+      await refreshTasks();
+    }
+  });
+}
+
+// Step 17 (S17-2/S17-3): replays the snapshot's exact previous titles
+// VERBATIM — never a reverse rename/re-insertion, which would also rewrite
+// tasks that legitimately already carried the destination tag by the time
+// Undo actually runs — and restores previousTagSettings WHOLESALE. One
+// shared handler for both rename and delete, since both snapshot shapes are
+// identical. Performing the undo consumes the slot immediately (S17-3): no
+// stack, no redo, and a failed undo doesn't get a second Undo pointed at it.
+async function handleTagUndoClick() {
+  const userId = getCurrentUserId();
+  const snapshot = tagUndoSnapshot;
+  if (!userId || !snapshot) return;
+
+  await enqueueMutation(async () => {
+    const currentUserId = getCurrentUserId();
+    if (!currentUserId) return;
+    tagUndoSnapshot = null; // consumed regardless of how this attempt goes
+
+    try {
+      for (const entry of snapshot.entries) {
+        const currentTask = getTasks().find((t) => t.id === entry.taskId);
+        if (!currentTask || currentTask.deleted) continue; // gone since — nothing left to restore it onto
+        await saveTask(currentUserId, { ...currentTask, title: entry.previousTitle });
+      }
+      await saveSettings(currentUserId, snapshot.previousTagSettings);
+    } catch (error) {
+      console.error("Failed to undo tag change:", error);
+      alert("Could not fully undo the tag change. The list has been refreshed to show what actually saved.");
+    } finally {
+      await refreshTasks();
+    }
+  });
 }
 
 // Step 13 (D10): the context menu's "Set due date"/"Change due date" item —
@@ -2288,6 +2547,11 @@ monitorAuthState(async (uid) => {
   } else {
     stopAutoRefresh();
     invalidate();
+    // Step 17 (S17-1): the undo snapshot is in-memory only and scoped to one
+    // session's tag operation — a different account signing in on the same
+    // page must never see an "Undo" offering to rewrite ITS tasks with the
+    // PREVIOUS account's title snapshot.
+    tagUndoSnapshot = null;
     closeTaskMenu(); // a menu open for one account's task means nothing once signed out
     cancelDrag(); // ditto for a drag in progress — see step 10's cancelDrag
     statusText.textContent = "Please sign in to access your task manager.";

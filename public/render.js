@@ -1264,7 +1264,31 @@ function createSettingsElement(tagName) {
   quadrantLabel.appendChild(quadrantSelect);
   li.appendChild(quadrantLabel);
 
-  return { li, preview, fgInput, bgInput, clearButton, quadrantSelect };
+  // Step 17: renames this tag across every task that carries it (and moves
+  // its settings entry to the new name), or deletes it outright (strips the
+  // token from every title AND removes the settings entry — product-
+  // spec.md:226-234). Two separate buttons rather than one control, since
+  // these are two different, differently-destructive actions with two
+  // different results — the same reasoning D10 (step 13) already used to
+  // keep "Change due date"/"Clear due date" as two menu items instead of
+  // one toggle label. Neither button carries its own listener (event
+  // delegation, same rule as every other control in this file); app.js's
+  // delegated click listener on #task-section recognizes both classes.
+  const renameButton = document.createElement("button");
+  renameButton.type = "button";
+  renameButton.className = "tag-setting__rename-btn";
+  renameButton.textContent = "Rename";
+  renameButton.setAttribute("aria-label", `Rename tag ${tagName}`);
+  li.appendChild(renameButton);
+
+  const deleteButton = document.createElement("button");
+  deleteButton.type = "button";
+  deleteButton.className = "tag-setting__delete-btn";
+  deleteButton.textContent = "Delete";
+  deleteButton.setAttribute("aria-label", `Delete tag ${tagName}`);
+  li.appendChild(deleteButton);
+
+  return { li, preview, fgInput, bgInput, clearButton, quadrantSelect, renameButton, deleteButton };
 }
 
 function updateSettingsElement(entry, tagName, tagSettings) {

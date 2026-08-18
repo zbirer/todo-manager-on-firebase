@@ -240,6 +240,11 @@ const showCompletedToggle = document.getElementById("show-completed-toggle");
 // per-keystroke re-render (S19-7) and Escape-to-clear (S19-8).
 const searchInput = document.getElementById("search-input");
 const searchEmptyMessage = document.getElementById("search-empty-message");
+// Step 20 (S20-9): a parse error (e.g. mid-keystroke on `#a AND `) never
+// blanks the list — it shows the full unfiltered list plus this message,
+// which renderMainView below toggles alongside computing the effective
+// (unfiltered) visible set.
+const searchErrorMessage = document.getElementById("search-error-message");
 const taskMenu = document.getElementById("task-menu");
 const taskMenuMoveOutItem = taskMenu.querySelector('[data-action="move-out"]');
 // Step 11 (D9): shown only for a task that currently has a parent — see
@@ -290,6 +295,11 @@ const settingsBtn = document.getElementById("settings-btn");
 const settingsBackBtn = document.getElementById("settings-back-btn");
 const settingsCountText = document.getElementById("settings-count");
 const settingsList = document.getElementById("settings-list");
+// Step 20 (S20-8): the week-start control lives directly on the Tag
+// Settings screen (there is no other settings surface in this app) — see
+// renderSettingsView below for how its value is initialized from the
+// stored setting, and updateWeekStart for the write path.
+const weekStartSelect = document.getElementById("week-start-select");
 // Step 17 (S17-1): the one Undo affordance for the last tag rename/delete —
 // see tagUndoSnapshot's own comment below for exactly what it holds.
 const settingsUndoBtn = document.getElementById("settings-undo-btn");
@@ -439,6 +449,12 @@ settingsBackBtn.addEventListener("click", () => switchView("main"));
 settingsUndoBtn.addEventListener("click", () => {
   handleTagUndoClick();
 });
+// Step 20 (S20-8): the week-start control — a single static <select>, not a
+// per-row control, so (like settingsUndoBtn above) it lives outside the
+// delegated per-tag-row listeners the rest of this screen uses.
+weekStartSelect.addEventListener("change", () => {
+  updateWeekStart(weekStartSelect.value);
+});
 
 function renderMainView() {
   const showCompleted = showCompletedToggle.checked;
@@ -459,18 +475,38 @@ function renderMainView() {
   // never crosses between them anyway.
   //
   // A blank search box makes `matchingTaskIds` return every task's id
-  // (searchQuery.js: zero terms is a vacuous AND, true for everything), so
+  // (searchQuery.js: an empty/whitespace-only query has no AST, and
+  // evaluating "no AST" is vacuously true for every task), so
   // `searchVisibleIds` degrades to "every task" and `searchContextIds`
   // degrades to empty below — every filter this stage adds is a genuine
   // no-op with the box empty, with no separate "is search active" branch
   // needed anywhere in this function.
+  //
+  // Step 20 (S20-8/S20-5): `weekStart` and `now` are read fresh on every
+  // render (no debounce, S19-7 unchanged) rather than cached, so a setting
+  // change or the calendar day rolling over takes effect on the very next
+  // keystroke or refresh with no separate invalidation path. `weekStart`
+  // defaults to `'sunday'` when the settings document has never been
+  // written (S20-8's own documented default), matching what a brand new
+  // user — or every pre-step-20 user — sees with no backfill.
   const searchQuery = searchInput.value;
-  const searchMatchIds = matchingTaskIds(searchQuery, nonDeletedTasks);
+  const searchContext = { now: new Date(), weekStart: getTagSettings()?.weekStart ?? "sunday" };
+  const { matches: parsedMatchIds, error: searchError } = matchingTaskIds(searchQuery, nonDeletedTasks, searchContext);
+  // S20-9: a parse error must not blank the list — every task counts as a
+  // "match" for visibility purposes (the filter is inert, not destructive)
+  // while the error text renders beside the box. `searchContextIds` stays
+  // empty in this state: with nothing actually filtered out, there is no
+  // ancestor-of-a-hidden-match case to dim.
+  searchErrorMessage.textContent = searchError ?? "";
+  searchErrorMessage.hidden = !searchError;
+  const searchMatchIds = searchError ? new Set(nonDeletedTasks.map((task) => task.id)) : parsedMatchIds;
   const searchVisibleIds = expandMatchesWithAncestors(nonDeletedTasks, searchMatchIds);
   // S19-4: a task in `searchVisibleIds` that ISN'T itself a match is showing
   // only as ancestor context for a matching descendant — render.js dims it
   // via `.task-item--search-context`.
-  const searchContextIds = new Set([...searchVisibleIds].filter((id) => !searchMatchIds.has(id)));
+  const searchContextIds = searchError
+    ? new Set()
+    : new Set([...searchVisibleIds].filter((id) => !searchMatchIds.has(id)));
 
   // Inbox vs. main is a strict partition: a subtask always inherits its
   // parent's `inInbox` at creation time (handleAddSubtaskClick below), so no
@@ -641,6 +677,13 @@ function renderSettingsView() {
       ? "No tags yet — add a #tag or @tag to a task title."
       : `${tagNames.length} tag${tagNames.length === 1 ? "" : "s"}`;
   renderSettings(settingsList, tagNames, tagSettings);
+
+  // Step 20 (S20-8): re-set on every render, same as every other settings
+  // control on this screen — a <select> has no in-progress-edit state to
+  // guard (unlike the title/note/due-date inputs elsewhere in this app),
+  // so there is no "skip while mid-edit" branch needed here. Absent field
+  // reads as `'sunday'`, the setting's own documented default.
+  weekStartSelect.value = tagSettings?.weekStart ?? "sunday";
 
   // Step 17 (S17-1): the Undo button only exists while the in-memory
   // snapshot exists — its own text names the exact action and is explicit
@@ -1474,6 +1517,36 @@ async function handleTagQuadrantChange(tagName, quadrant) {
     }),
     "Could not save the tag quadrant."
   );
+}
+
+// Step 20 (S20-8): writes the `weekStart` field of the SAME settings
+// document `updateTagSettings` above writes `tags` into — not routed
+// through that helper because this mutation touches a sibling field, not
+// `tags` itself, but every other rule is identical: whole-document
+// `setDoc` via `saveSettings`, serialized through `enqueueMutation` so this
+// can never interleave with a concurrent tag-color/quadrant write, the
+// current settings object re-read fresh at mutation time (never the one
+// captured when the <select> fired its `change` event), and the same
+// `finally { refreshTasks() }` resync every mutation in this file uses.
+// `value` is exactly the <select>'s raw value — `'sunday'` or `'monday'`,
+// the two strings `isValidSettings()` (firestore.rules) already accepts.
+async function updateWeekStart(value) {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
+  await enqueueMutation(async () => {
+    const currentUserId = getCurrentUserId();
+    if (!currentUserId) return;
+    const current = getTagSettings();
+    try {
+      await saveSettings(currentUserId, { ...current, weekStart: value });
+    } catch (error) {
+      console.error("Failed to save the week-start setting:", error);
+      alert("Could not save the week-start setting.");
+    } finally {
+      await refreshTasks();
+    }
+  });
 }
 
 // Step 17 (S17-1/S17-3): the ONE undo slot for the last tag rename/delete —

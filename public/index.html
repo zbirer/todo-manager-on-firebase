@@ -113,6 +113,14 @@
     .task-item--search-context {
       opacity: 0.5;
     }
+    /* Step 20 (S20-9): the same dark-red #b91c1c the destructive tag-delete
+       button already uses (below) — reused here rather than a new color so
+       "this needs your attention" reads consistently across the app. */
+    #search-error-message {
+      color: #b91c1c;
+      font-size: 13px;
+      margin: 4px 0;
+    }
     .task-item__label {
       cursor: text;
     }
@@ -605,6 +613,14 @@
            un-hides this when the trimmed query is non-empty. -->
       <p id="search-empty-message" hidden>No tasks match</p>
 
+      <!-- Step 20 (S20-9): a parse error (e.g. mid-keystroke on `#a AND `)
+           never blanks the list — app.js's renderMainView shows the full
+           unfiltered list and un-hides this instead, right beside the box
+           it's reporting on. Never a stack trace: the text is always one
+           of the plain-English messages searchQuery.js's parser throws
+           ("expected a term after AND", "unbalanced parenthesis", ...). -->
+      <p id="search-error-message" hidden></p>
+
       <!-- Step 12 (D1/D8): Focus — pinned tasks, hand-picked (D2: flat, no
            subtree pulled in), sorted by the same comparator as the main list
            (D3). `hidden` by default; app.js's renderMainView toggles it based
@@ -683,6 +699,20 @@
            history this app doesn't have (there is no operation log; this is
            scoped to exactly this one action per PROGRESS.md's Decisions). -->
       <button type="button" id="settings-undo-btn" hidden></button>
+      <!-- Step 20 (S20-8): "this week" has no universal meaning, so the
+           first day of the week is a per-user setting living on this same
+           screen (there is no other settings surface in this app) — one
+           <select>, not per-row, so it lives outside the per-tag rows
+           `#settings-list` renders. Options are the literal `'sunday'`/
+           `'monday'` strings `isValidSettings()` (firestore.rules) already
+           accepts — see app.js's `updateWeekStart`. Defaults to Sunday
+           (S20-8's documented default) both here and when the field is
+           entirely absent from a settings document that predates step 20. -->
+      <label for="week-start-select">Week starts on</label>
+      <select id="week-start-select">
+        <option value="sunday">Sunday</option>
+        <option value="monday">Monday</option>
+      </select>
       <ul id="settings-list"></ul>
     </div>
   </div>

@@ -1,8 +1,9 @@
 # Progress
 
-Last updated: 2026-08-18 — **Steps 1–19 implemented.** Step 20 (Search —
-advanced) is next. No signed-in browser walkthrough has been reported back
-for any step yet — the click-path below is still the first thing to run.
+Last updated: 2026-08-18 — **Steps 1–20 implemented.** Step 21
+(Export / import) is next. No signed-in browser walkthrough has been
+reported back for any step yet — the click-path below is still the first
+thing to run.
 
 ## Step table
 
@@ -27,7 +28,7 @@ for any step yet — the click-path below is still the first thing to run.
 | 17 | Tag rename/delete | done |
 | 18 | Recurrence | done |
 | 19 | Search — basic | done |
-| 20 | Search — advanced | next |
+| 20 | Search — advanced | done |
 | 21 | Export / import | planned |
 
 ## Step 16 (Priority ordering) — done
@@ -150,25 +151,67 @@ genuinely task-free account doesn't show the same message with an empty
 box. No schema, `firestore.rules`, or `firestore.indexes.json` change
 (S19-10) — search stores nothing.
 
-## Resume here — step 20 (Search — advanced)
+## Step 20 (Search — advanced) — done
 
-**Exact next action:** implement step 20 per product-spec.md §6's Boolean
-search bullet (`AND`/`OR`/parentheses, mixed sigil distribution, e.g.
-`#(private OR #pr) AND @office`) plus its temporal terms (`today`,
-`this week`, `this month`, `age > 20d`/`age < 3m`, `overdue`) and the
-`weekStart` setting (Sunday/Monday, defaulting Sunday) — read
-product-spec.md §6 in full again before writing code; step 19's own S19-2
-comment records that its leaf-kind set (bare word, `#tag`, `@tag`) is
-**final for both steps** — step 20 adds no new leaf KINDS, only a grammar
-(AND/OR/parens) over the same `matchesTerm` plus new leaf kinds for the
-temporal terms that step 19 deliberately left out. `matchesTerm` in
-`public/searchQuery.js` is the one seam step 20 is designed to extend
-without touching `render.js`/`app.js`'s filter wiring (S19-1) — confirm
-that still holds before assuming a bigger rewrite is needed. `weekStart` is
-a new field on the settings document (`users/{uid}/meta/settings`,
-`settingsService.js`); check `isValidSettings()` in `firestore.rules`
-before writing it, the same "read the rule, don't assume" discipline step
-14/15 already established for that document.
+Implemented exactly per the orchestrator's locked grammar and decisions
+(S20-1–S20-11, see the Decisions log's step 20 entries below, which also
+carry the full 27-row worked-example table). `public/searchQuery.js` grows
+a hand-written recursive-descent parser (`parseSearchQuery`) that turns a
+raw query string into an AST — `query := orExpr`, `orExpr := andExpr (OR
+andExpr)*`, `andExpr := primary ((AND)? primary)*` (juxtaposition is AND,
+S19-3's degenerate case), `primary := sigilGroup | group | term` — and a
+tree-walking evaluator (`evaluateNode`, private) that calls step 19's
+UNCHANGED `matchesTerm` at every word/tag leaf (S19-1 held: no rewrite was
+needed) plus three new leaf kinds (`overdue`, `date`, `age`) at the
+temporal ones. AND/OR are case-insensitive keywords (S20-3); a lone
+`"and"`/`"or"` in the text can no longer be searched as a literal word,
+recorded as an accepted cost rather than a bug. Sigil distribution (S20-4)
+pushes a group's sigil onto every bare-word leaf beneath it via one
+recursive function (`applySigilDistribution`) with no group-boundary
+bookkeeping: a leaf that already carries its own sigil, or one inside a
+NESTED sigil group, is never seen as a bare word by the outer distribution
+in the first place, because distribution runs immediately when each
+sigilGroup's own closing paren is reached (innermost first, by construction
+of recursive descent) — and a temporal/age/overdue leaf is classified
+during lexing, before distribution ever runs, so `#(private OR overdue)`
+can only ever produce `OR(tag(#private), overdue)`, never a manufactured
+`tag(#overdue)`. `age` reads `occurrenceStart ?? createdAt` (S20-5),
+byte-identical to the row's own displayed age (render.js:792, S18-3) —
+resolving spec:178-180's literal "creation date" wording in favor of
+agreement with the screen. Day comparisons floor a whole local-calendar-day
+difference (the same math `computeAgeLabel` uses, reused as math since that
+function returns a string); month comparisons (`age > Nm`/`age < Nm`)
+compare against a calendar-month cutoff date with the same end-of-month
+clamping `recurrence.js`'s `addMonthsClamped` uses (S20-6, mirrored rather
+than imported since that function isn't exported and only steps forward).
+`today`/`this week`/`this month` (S20-7) read `dueDate` (never `age`'s
+source), compare LOCAL calendar days via `render.js`'s `localMidnight`
+(S20-10, imported — `searchQuery.js` importing from `render.js` is not a
+cycle, confirmed by reading render.js's own imports before adding this
+one), and a task with no due date matches none of them. `this week` reads
+the new `weekStart` setting (S20-8) — `'sunday'`/`'monday'` on the EXISTING
+`users/{uid}/meta/settings` document `firestore.rules` already validates,
+never a `weekStartDay: 0|1` (an earlier, superseded draft) — defaulting to
+`'sunday'` when the field is absent, with **no rules change** (confirmed by
+re-reading `isValidSettings()` before writing a line of code, not assumed).
+A parse error (S20-9) never blanks the list: `matchingTaskIds` now returns
+`{ matches, error }` rather than a bare Set (the one shape change to a
+step-19 export, necessary to distinguish "invalid query" from "valid query,
+zero results"), and `app.js`'s `renderMainView` treats a non-null `error`
+as "every task counts as visible" plus un-hiding a new
+`#search-error-message` beside the box with the parser's own plain-English
+message (never a stack trace). Nothing is persisted beyond `weekStart`
+(S20-11): no query history, no saved searches, no new task field, and
+`firestore.indexes.json` is untouched.
+
+## Resume here — step 21 (Export / import)
+
+**Exact next action:** implement step 21 per product-spec.md §8 (lines
+238-241) — export to a JSON file (tasks with hierarchy, notes, tags, dates,
+completion state, plus settings) and import that JSON back in. This session
+did not scope step 21 in any further detail; read product-spec.md §8 in
+full, and the surrounding sections for any cross-references, before
+planning it.
 
 **No step has been confirmed in a signed-in browser yet.** Everything below marked
 "verified" was verified unsigned-in, by driving the real modules with synthetic
@@ -1709,6 +1752,98 @@ driving the real modules directly):**
     calls to `saveTask`/`softDeleteTask`/`purgeTask`/`saveSettings` and no
     fake signed-in uid set at any point.
 
+**Files touched (step 20):**
+- `public/searchQuery.js` — the grammar/parser section (`parseSearchQuery`,
+  `matchingTaskIds` reworked to return `{ matches, error }`), the AST
+  evaluator (`evaluateNode`, `evaluateDateTerm`, `evaluateAgeTerm`, private),
+  the sigil-distribution pass (`applySigilDistribution`), and the tokenizer
+  (`tokenize`). `matchesTerm` (S19-2) is untouched — imported by nothing new,
+  called by the evaluator exactly as it was called by step 19's own
+  `matchingTaskIds`. New import: `localMidnight`/`timestampToDate`/
+  `isOverdueTask` from `render.js` (S20-10; confirmed not a cycle by reading
+  render.js's own import list first).
+- `public/app.js` — `renderMainView`'s search stage now builds a
+  `{ now, weekStart }` context (weekStart read from
+  `getTagSettings()?.weekStart ?? "sunday"`) and destructures
+  `{ matches, error }` from `matchingTaskIds`; on error, every non-deleted
+  task counts as visible and `#search-error-message` un-hides with the
+  parser's message (S20-9). New `searchErrorMessage`/`weekStartSelect` DOM
+  refs; `renderSettingsView` sets the select's value from the stored
+  setting on every render (S20-8); a new `updateWeekStart` function mirrors
+  `updateTagSettings`'s shape exactly (whole-document `setDoc` via
+  `saveSettings`, serialized through `enqueueMutation`, current settings
+  re-read at mutation time, `finally { refreshTasks() }`) but writes
+  `weekStart` instead of `tags`; a new `change` listener on
+  `weekStartSelect` outside the per-tag-row delegated listeners (same
+  precedent as `settingsUndoBtn`).
+- `public/index.html` — `#search-error-message` (S20-9, hidden by default,
+  styled in the same dark red `#b91c1c` the tag-delete button already uses)
+  and `#week-start-select` (S20-8, a `Sunday`/`Monday` `<select>` on the Tag
+  Settings screen — there is no other settings surface in this app — with
+  its own `<label>`).
+- No change to `firestore.rules` or `firestore.indexes.json` (S20-8/S20-11)
+  — `isValidSettings()` already validated `weekStart` before this step
+  existed, confirmed by re-reading the rule rather than assumed.
+- `FIREBASE.md` — the settings-document schema table's `weekStart` row
+  updated from "not written by any code yet" to record this step as its
+  writer.
+
+**Verified (step 20 — pure-function verification against the real
+`searchQuery.js` module, run with `node`, today pinned to Sunday
+2026-08-23 matching the worked-example table's own assumption; see the
+Decisions log entry below for the full 27-row table):**
+- All 27 worked-example rows pass: parsed AST shape checked directly via
+  `parseSearchQuery` for the structural rows (5/6's byte-identical ASTs;
+  8/9's nested-group distribution; 10's overdue immunity; 11's precedence;
+  27's three-bare-words fallback), and `matchingTaskIds` checked against
+  fabricated plain-object tasks (no Firestore Timestamp objects, no DOM)
+  for the rest.
+- Row 5 vs row 6 (`#(private OR pr)` vs `(#private OR #pr)`) produce
+  `JSON.stringify`-identical ASTs, not just equivalent match sets — proving
+  S20-4's "the parser accepts both sigil styles... a term inside a
+  sigil-prefixed group that carries its own sigil keeps its own" is a
+  genuine parse-time equivalence.
+- Row 15's Monday-start week correctly puts Sunday 2026-08-23 (the pinned
+  "today") as the LAST day of its own week (2026-08-17..2026-08-23), not
+  excluded from it.
+
+**Verified (step 20 — real UI, driven unsigned-in exactly like every prior
+step's browser verification: synthetic tasks injected via `store.js`'s
+real `setTasks`/`setTagSettings`, real DOM events dispatched against
+app.js's actual attached listeners, `#task-section` unhidden by hand since
+that only happens via sign-in otherwise; zero Firestore requests recorded
+throughout, confirmed via the browser's own network log):**
+- The spec's own two examples (spec:160, :191-192), run against 8 synthetic
+  tasks: `#(private OR #pr) AND @office` matched only the one task carrying
+  both `#pr` and `@office`; `#galit AND age > 20d` matched only the
+  `#galit` task whose `createdAt` was far enough in the past, not the one
+  created "today."
+- Row 5/6's AST equivalence reproduced live: both queries rendered the
+  identical three-row result set.
+- A parse error (`#a AND`) left all 8 tasks visible and un-hid
+  `#search-error-message` with the text "expected a term after AND" — S20-9
+  proven against the real render path, not just the pure evaluator.
+- The week-start setting changing a `this week` result: a task due Sunday
+  2026-08-23 (the real wall-clock "today" this session ran on) was excluded
+  from `this week` under a Sunday-start week and included under a
+  Monday-start week, via the real `evaluateDateTerm` code path.
+- Step 19 regression, run against a 3-deep tree (`P > B > C`) plus an
+  unrelated task `Q`: a bare word matching only `C`/`Q` correctly dimmed
+  `P`/`B` as `.task-item--search-context`, undimmed `C`/`Q`; `#private`
+  (only `B` carries it) correctly pulled in `P` as ancestor context. Both
+  match step 19's own original verification results exactly — the AST-based
+  rewrite changed nothing observable about step 19's behavior.
+- **Not verified live (would require a real signed-in Firestore write,
+  prohibited for this task):** the week-start `<select>`'s `change` →
+  `saveSettings` → `refreshTasks` round trip. What WAS verified: dispatching
+  a real `change` event on the real `#week-start-select` while signed out
+  ran the real listener → `updateWeekStart` → `getCurrentUserId()` returned
+  falsy → the function returned before calling `saveSettings`, confirmed by
+  zero Firestore requests in the network log. The store→render half of that
+  same round trip (`getTagSettings().weekStart` flowing into a changed
+  `this week` result) IS verified above, by calling `setTagSettings`
+  directly — the same stand-in the write itself would have performed.
+
 ## Decisions
 
 - **step 1** — `ancestors: string[]` written as `[]` on every new task, even though
@@ -3030,6 +3165,149 @@ driving the real modules directly):**
   `firestore.rules`, `firestore.indexes.json`, or any write path.** Search
   stores nothing; every field it reads (`title`, `note`, `tags`) already
   existed and was already validated by prior steps.
+- **step 20 — grammar (settled before any parser code, per the plan's own
+  requirement):**
+  ```
+  query      := orExpr
+  orExpr     := andExpr ( OR andExpr )*
+  andExpr    := primary ( (AND)? primary )*        // juxtaposition is AND (S19-3)
+  primary    := sigilGroup | group | term
+  group      := "(" query ")"
+  sigilGroup := SIGIL "(" query ")"
+  term       := overdueTerm | dateTerm | ageTerm | tagTerm | word
+
+  SIGIL       := "#" | "@"
+  AND         := "AND"   (case-insensitive)
+  OR          := "OR"    (case-insensitive)
+  overdueTerm := "overdue"
+  dateTerm    := "today" | "this week" | "this month"
+  ageTerm     := "age" ( ">" | "<" ) INT ( "d" | "m" )
+  tagTerm     := SIGIL WORD
+  word        := any run of non-space, non-paren characters
+  ```
+- **step 20 (S20-1) — precedence: AND binds tighter than OR.** `#a OR #b
+  AND @c` parses as `#a OR (#b AND @c)` — standard, and the only reading
+  that makes spec:160's own example (`#(private OR #pr) AND @office`)
+  behave as its own prose describes.
+- **step 20 (S20-2) — `NOT` is not implemented.** The spec names AND, OR
+  and parentheses only (spec:159-160). Recorded so a future session knows
+  its absence is a decision, not an oversight.
+- **step 20 (S20-3) — operators are case-insensitive keywords, and the
+  cost is stated.** `and`/`And`/`AND` all parse as the operator, so the
+  bare English words "and"/"or" can no longer be searched as text.
+  Accepted: task content is Hebrew (spec:12-14), and the alternative
+  (uppercase-only operators) would silently turn a lowercase `#a and #b`
+  into a three-term AND that also requires the literal text "and" — worse
+  to diagnose than a documented limitation. `overdue`/`today`/`this`/
+  `week`/`month`/`age` are matched literally lowercase, same as the
+  grammar quotes them — only AND/OR are singled out as case-insensitive.
+- **step 20 (S20-4) — sigil distribution, and the term kinds immune to
+  it.** `SIGIL "(" query ")"` pushes the sigil onto every bare-word leaf
+  in the subtree, at any depth. Three exceptions: (1) a leaf that already
+  carries its own sigil keeps it (spec:163-165); (2) a nested sigil group
+  stops the outer sigil at its boundary — the inner sigil wins for
+  everything inside it; (3) temporal terms are immune — `#(private OR
+  overdue)` must not invent a tag `#overdue`, because overdue/date/age
+  terms are classified during LEXING, before distribution ever runs, so
+  distribution can never see them as bare words. Implementation note: all
+  three exceptions fall out of one recursive function
+  (`applySigilDistribution`) with no group-boundary bookkeeping, because a
+  nested sigil group's own distribution has already run (converting its
+  word leaves to tag leaves) by the time an outer distribution walks over
+  it — recursion order alone makes exception 2 correct for free.
+- **step 20 (S20-5) — `age` reads the same clock the screen shows:
+  `occurrenceStart ?? createdAt`.** Spec:178-180 says age filters read
+  "the creation date." Read literally that contradicts step 18: a daily
+  recurring task created a year ago would answer `age > 20d` as 365 days
+  old while its own row displays an age of 1 day (S18-3, render.js:792).
+  A query language whose numbers disagree with the numbers on screen is
+  unusable, and spec:141-142 already demands "a daily task never reports
+  itself as months old." Resolution: search's `age` uses `occurrenceStart
+  ?? createdAt`, byte-identical to the displayed age. For every task that
+  has never recurred (all of them until a recurrence is set), this IS the
+  creation date, so the literal reading and this one only diverge where
+  the spec already contradicts itself.
+- **step 20 (S20-6) — age units and operators.** `d` = days. `m` =
+  calendar months, not 30-day blocks (subtract N months from today with
+  the same end-of-month clamping as `addMonthsClamped`, recurrence.js:74,
+  then compare — mirrored rather than imported since that function isn't
+  exported and only steps forward, never backward). Only `>` and `<`
+  (spec:185-187); `>=`/`<=`/`=` are not implemented. Whitespace around the
+  operator is free: `age>20d`, `age > 20d`, `age >20d`, `age> 20d` all lex
+  identically (the tokenizer's 1/2/3-token concatenation check reconstructs
+  the same string regardless of where the split fell).
+- **step 20 (S20-7) — date terms read `dueDate`; a task with no due date
+  matches none of them.** `today` = the due date's local midnight equals
+  today's local midnight. `this week`/`this month` = the due date falls
+  inside the current CALENDAR week/month, never a rolling window. All
+  local-time-zone (spec:181), via `localMidnight` (render.js:231) — never
+  `new Date("YYYY-MM-DD")`, which parses as UTC and lands a day early here.
+- **step 20 (S20-8) — week start uses the field `firestore.rules` ALREADY
+  reserves.** The field is `weekStart`, a string, `'sunday' | 'monday'`,
+  on the existing `users/{uid}/meta` settings document beside `tags`. An
+  earlier draft of this decision said `weekStartDay: 0 | 1`; that is
+  superseded and was NOT built — `isValidSettings()` has no `hasOnly`
+  clause, so a numeric `weekStartDay` would have written successfully
+  while sitting entirely outside validation, a silent permanent schema
+  fork. The rules needed no change: they already permit and constrain this
+  field. Absent field reads as `'sunday'` (spec:189's default), so there
+  is no backfill and every existing settings document stays valid.
+- **step 20 (S20-9) — a parse error leaves the list unfiltered and says
+  so.** A user mid-keystroke on `#a AND ` is transiently invalid. Flashing
+  an empty list every keystroke is unacceptable, and silently returning
+  everything is a lie. On a parse error: render the full unfiltered list
+  and show the error text beside the search box. Search is inert until
+  the query is valid. The error names the problem ("unbalanced
+  parenthesis", "expected a term after AND"), never a stack trace.
+- **step 20 (S20-10) — layering: `searchQuery.js` imports its date
+  helpers from `render.js`.** `localMidnight`, `timestampToDate` and
+  `isOverdueTask` are already exported from render.js (:231, :220, :285)
+  and are pure. Importing them is the only option that adds zero
+  duplication. Rejected alternatives: a private local-midnight copy inside
+  searchQuery.js would be the THIRD in the repo (render.js:231,
+  recurrence.js:43) and invites divergence; extracting a `dates.js`
+  mid-feature-step touches three files for an aesthetic gain. If a
+  `dates.js` is ever extracted, those three functions plus an `ageInDays`
+  are exactly its contents.
+- **step 20 (S20-11) — no history, no saved searches, no new task
+  field.** Nothing about a query is persisted except `weekStart`. No
+  rules change beyond confirming S20-8. `firestore.indexes.json` was not
+  touched.
+- **step 20 — worked examples, all 27 reproduced against the real parser
+  and evaluator (verified in PROGRESS.md's own Step 20 section above).**
+  Assumes today = Sunday 2026-08-23, `weekStart = 'sunday'`, so the
+  current calendar week is 2026-08-23…2026-08-29 and the current month is
+  August 2026.
+
+  | # | Query | Parses as | Matches |
+  |---|---|---|---|
+  | 1 | `דוח` | word("דוח") | title or note contains "דוח" |
+  | 2 | `#work` | tag(#work) | `tags` contains exactly `#work` (case-insensitive); NOT `#workshop` |
+  | 3 | `work` | word("work") | title/note contains "work" — INCLUDING a task tagged `#workshop`, since the title holds that literal text |
+  | 4 | `דוח #work` | AND(word, tag) | both |
+  | 5 | `#(private OR pr)` | OR(tag(#private), tag(#pr)) | distribution, S20-4 |
+  | 6 | `(#private OR #pr)` | OR(tag(#private), tag(#pr)) | **identical to row 5** — this equivalence is spec:161-163's whole point |
+  | 7 | `#(private OR #pr) AND @office` | AND(OR(tag(#private),tag(#pr)), tag(@office)) | the spec's own example, spec:160 |
+  | 8 | `#(private OR @office)` | OR(tag(#private), tag(@office)) | inner sigil wins, S20-4.1 |
+  | 9 | `#(a OR (b OR c))` | OR(tag(#a), OR(tag(#b), tag(#c))) | distribution reaches nested plain groups |
+  | 10 | `#(private OR overdue)` | OR(tag(#private), overdue) | `overdue` is immune, S20-4.3 — **not** `tag(#overdue)` |
+  | 11 | `#a OR #b AND @c` | OR(tag(#a), AND(tag(#b), tag(@c))) | precedence, S20-1 |
+  | 12 | `overdue` | overdue | `dueDate` strictly before today's local midnight, not completed/deleted |
+  | 13 | `today` | today | `dueDate` local-midnight == 2026-08-23 |
+  | 14 | `this week` | thisWeek | `dueDate` in 2026-08-23 … 2026-08-29 inclusive |
+  | 15 | `this week` with `weekStart='monday'` | thisWeek | 2026-08-17 … 2026-08-23 — Sunday the 23rd is the **last** day of a Monday-start week |
+  | 16 | `this month` | thisMonth | `dueDate` in 2026-08-01 … 2026-08-31 |
+  | 17 | `age > 20d` | age(>,20,d) | `occurrenceStart ?? createdAt` strictly more than 20 whole local days ago |
+  | 18 | `age < 3m` | age(<,3,m) | that same date is strictly after 2026-05-23 |
+  | 19 | `age>20d` | age(>,20,d) | identical to row 17, S20-6 |
+  | 20 | `#galit AND age > 20d` | AND(tag(#galit), age(>,20,d)) | the spec's compound example, spec:191-192 |
+  | 21 | `#p1 AND overdue` | AND(tag(#p1), overdue) | the spec's compose example, spec:182-184 |
+  | 22 | `#a and #b` | AND(tag(#a), tag(#b)) | case-insensitive operator, S20-3 |
+  | 23 | `#a AND` | **parse error** | "expected a term after AND" → unfiltered list + message, S20-9 |
+  | 24 | `(#a OR #b` | **parse error** | "unbalanced parenthesis" → unfiltered list + message |
+  | 25 | `` (empty) | no query | full unfiltered list, no error |
+  | 26 | `AND` | **parse error** | a lone operator is not a term |
+  | 27 | `age > 20` | word("age") AND word(">") AND word("20") | no unit ⇒ NOT an age term; falls through to three bare words. Deliberate: silently assuming days would hide a typo |
 
 ## Open items (not steps)
 

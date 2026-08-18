@@ -551,6 +551,21 @@
       color: white;
       flex-shrink: 0;
     }
+    /* Step 21 (S21-9): Export/Import — two more static controls on this same
+       screen, styled apart from the per-tag rows below them (a margin gap,
+       not a border) since they act on the whole account, not one tag. */
+    #data-portability {
+      display: flex;
+      gap: 8px;
+      margin: 4px 0 16px;
+    }
+    #export-btn,
+    #import-btn {
+      background-color: #0f766e;
+      color: white;
+      font-size: 13px;
+      padding: 6px 10px;
+    }
   </style>
 </head>
 <body>
@@ -713,6 +728,22 @@
         <option value="sunday">Sunday</option>
         <option value="monday">Monday</option>
       </select>
+      <!-- Step 21 (S21-9): the two Data Portability actions — plain buttons
+           on this existing screen (there is no other settings surface in
+           this app), not a new view. Export needs no confirm dialog (it's
+           read-only); Import's confirm dialog lives in app.js's file-input
+           change handler, only once the chosen file has actually been read
+           and validated (S21-5/S21-7 — the dialog can only ever offer an
+           operation that CAN fully succeed, same as step 17's rename/delete
+           precedent). `#import-file-input` is hidden and triggered by
+           `#import-btn`'s click (app.js's handleImportClick) rather than
+           shown directly, so the control reads like every other button here
+           instead of a bare, unstyled native file picker. -->
+      <div id="data-portability">
+        <button type="button" id="export-btn">Export to JSON file</button>
+        <button type="button" id="import-btn">Import from JSON file</button>
+        <input type="file" id="import-file-input" accept="application/json" hidden />
+      </div>
       <ul id="settings-list"></ul>
     </div>
   </div>

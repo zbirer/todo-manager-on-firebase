@@ -1,9 +1,9 @@
 # Progress
 
-Last updated: 2026-08-18 — **Steps 1–20 implemented.** Step 21
-(Export / import) is next. No signed-in browser walkthrough has been
-reported back for any step yet — the click-path below is still the first
-thing to run.
+Last updated: 2026-08-18 — **Steps 1–21 implemented.** All 21 planned steps
+are now built. No signed-in browser walkthrough has been reported back for
+any step yet — the click-path below is still the first thing to run, and is
+now the actual next action (see "Resume here" below).
 
 ## Step table
 
@@ -29,7 +29,7 @@ thing to run.
 | 18 | Recurrence | done |
 | 19 | Search — basic | done |
 | 20 | Search — advanced | done |
-| 21 | Export / import | planned |
+| 21 | Export / import | done |
 
 ## Step 16 (Priority ordering) — done
 
@@ -204,14 +204,182 @@ message (never a stack trace). Nothing is persisted beyond `weekStart`
 (S20-11): no query history, no saved searches, no new task field, and
 `firestore.indexes.json` is untouched.
 
-## Resume here — step 21 (Export / import)
+## Step 21 (Export / import) — done
 
-**Exact next action:** implement step 21 per product-spec.md §8 (lines
-238-241) — export to a JSON file (tasks with hierarchy, notes, tags, dates,
-completion state, plus settings) and import that JSON back in. This session
-did not scope step 21 in any further detail; read product-spec.md §8 in
-full, and the surrounding sections for any cross-references, before
-planning it.
+Implemented exactly per the orchestrator's locked decisions (S21-1–S21-12,
+see the Decisions log's step 21 entries below). `public/dataTransfer.js` is a
+new module, pure, no DOM and no Firestore, same standing as
+`taskTree.js`/`tagColors.js`/`recurrence.js`/`searchQuery.js`: it owns the
+file's exact JSON shape (`buildExportPayload`/`stringifyExportPayload`/
+`buildExportFilename`), the Timestamp<->ISO-string conversion both directions
+share (`serializeTaskForExport`/`deserializeTaskFromImport`, keyed off one
+shared `TIMESTAMP_FIELDS` array — S21-3's real hazard, guarded against
+drifting the way S21-3 itself warns), and the whole-file validator
+(`validateImportPayload`/`parseImportPayload`, S21-7) that runs to completion
+and reports every problem found, never just the first. `app.js` owns
+everything dataTransfer.js deliberately does not: the download click
+(`handleExportClick`, a Blob + object URL + synthetic `<a download>`, S21-4),
+the hidden file input (`handleImportClick`/`handleImportFileSelected`, a real
+`FileReader`, S21-9), both confirm dialogs, and the
+`enqueueMutation`-wrapped `saveTask` loop plus one `saveSettings` call and one
+final `refreshTasks()` (S21-8) — the same "click-time plan, re-validate fresh
+inside the mutation" shape step 17's tag rename/delete already established.
+
+Export carries every task document verbatim, soft-deleted ones included
+(S21-1) — `refreshTasks()` runs first (S21-11) so the file is never up to
+five minutes stale, then the payload is built straight from
+`getTasks()`/`getTagSettings()`, no separate fetch path. Import is an upsert
+by id, never a wipe (S21-5): every task in the file is written by its own id
+via `saveTask`; a task in the account but absent from the file is left
+completely alone, and the confirm dialog says so in plain words. Settings are
+the one asymmetric exception (S21-10): the whole tag-settings document is
+REPLACED wholesale via `saveSettings` when the file carries one, since
+merging two tag-color maps would produce a state that existed in neither the
+file nor the account — a file with no `settings` key leaves the account's
+settings untouched. Ids are preserved verbatim (S21-6) — `saveTask` is the
+only writer, so `createdAt` survives an import unchanged while `updatedAt`
+gets re-stamped to the import time, exactly as it does for every other write
+in this app (S21-8's own documented, accepted cost).
+
+Validation happens twice for the same import: once at file-select time
+(so the confirm dialog only ever offers an operation that CAN fully
+succeed) and once again inside the queued mutation against whatever's
+actually in the account by the time it runs — the same "re-read at run
+time" architecture rule every other mutation in this file already follows.
+A dangling `parentId` (pointing at neither a task in the file nor a task
+already in the account) blocks the whole import with zero writes (S21-7);
+a `parentId` resolving FORWARD to a later task in the same file is
+deliberately accepted (verified directly in step21-verify.mjs), since
+S21-6 preserves ids and nothing about file order should matter. On a
+write failure mid-loop, the import stops at the first failure, reports how
+many tasks actually wrote, and refreshes — no retry, no rollback (S21-8).
+
+One deliberate deviation from S21-3's illustrative code, recorded rather
+than silent: import's Timestamp reconstruction uses a plain `new Date(iso)`,
+not a constructed `Timestamp.fromDate(new Date(iso))`. Firestore's `setDoc`
+already converts a bare JS `Date` into a Timestamp on write — this
+codebase's own `taskService.js`'s `addTask` does exactly that for
+`dueDate: new Date(taskDetails.dueDate)` — so the document that lands in
+Firestore is byte-identical either way; only the construction path differs.
+Importing the real `Timestamp` class into `dataTransfer.js` would have
+required a `firebase/firestore` import, which this project's browser-only
+import map resolves to a CDN URL that plain Node cannot see at all — doing
+so would have broken the module's ability to run as the bare Node
+verification script this project's only test tooling depends on (no
+npm, no bundler, no test runner). Behaviorally identical once written;
+noted here rather than assumed acceptable.
+
+**Verified (pure, unsigned-in, exactly as the project's constraints
+require):**
+- `node --check` passes on every file under `public/*.js`, `dataTransfer.js`
+  included.
+- `xcheck.mjs`: 98 named imports checked (up from the prior baseline of 92 —
+  exactly app.js's six new named imports from `dataTransfer.js`) — CLEAN.
+- `step21-verify.mjs` (scratchpad), 35 cases, 0 failed: the full
+  Timestamp-field round trip (all five fields, identical millisecond values)
+  and the null-stays-null case in both directions; wrong `format`/wrong
+  `version` rejected, correct ones with an empty `tasks` array accepted;
+  a dangling `parentId` rejected, one resolving to an existing ACCOUNT task
+  accepted, one resolving FORWARD to a later task in the same file accepted;
+  a 1001-char title, a 10001-char note, and a 7-entry `ancestors` array each
+  rejected, with the exact boundary values (1000/10000/6) accepted; a
+  `weekStart` of `"tuesday"` rejected, `"monday"` accepted; a structurally
+  invalid payload returns `{ ok: false }` synchronously with no exception and
+  no write attempted (dataTransfer.js has no Firestore import anywhere —
+  grep-confirmed, not assumed); malformed JSON text rejected before
+  validation even runs; and a real `buildExportPayload` output round-trips
+  through `parseImportPayload` as valid end to end.
+- Reachability traced by hand, both directions: `#export-btn` click ->
+  `handleExportClick` -> `refreshTasks` -> `buildExportPayload`/
+  `stringifyExportPayload` -> Blob/object-URL/`<a download>` click. `#import-
+  file-input` `change` -> `handleImportFileSelected` -> `FileReader.readAsText`
+  -> `reader.onload` -> `parseImportPayload` -> (confirm) -> `enqueueMutation`
+  -> `validateImportPayload` (re-run) -> `saveTask` loop -> `saveSettings` ->
+  `refreshTasks`.
+
+**Assumed, not verified — nothing below has ever run in a signed-in
+browser, for this step or any prior one (see the standing note at the top
+of this file):**
+- That an actual signed-in export produces a file Firestore's real Timestamp
+  objects serialize correctly through (the round trip above uses a duck-typed
+  stand-in with the same `.toDate`/`.toMillis` shape, not the real SDK class —
+  the same limitation every prior step's "verified unsigned-in" note carries).
+- That `saveTask`/`saveSettings` actually accept the plain-`Date`-valued
+  fields `deserializeTaskFromImport` produces, end to end through a real
+  `setDoc` call, and that the resulting documents read back with correct
+  Timestamps on the next `fetchTasks`/`fetchSettings`.
+- That the browser's real `FileReader`/`Blob`/`URL.createObjectURL`/
+  `<a download>` APIs behave as coded — none of this can run outside a
+  browser, and no browser session against a live Firestore has occurred.
+- That importing a file exported from a DIFFERENT account doesn't collide on
+  an id in any way not already reasoned about in S21-6's accepted-cost note.
+- The "Importing N of M…" progress text actually renders and updates visibly
+  during a real multi-hundred-task import (mechanically wired, never watched).
+
+**Files touched (step 21):**
+- `public/dataTransfer.js` — **new module.** `EXPORT_FORMAT`/`EXPORT_VERSION`/
+  `TIMESTAMP_FIELDS` (S21-2/S21-3); `serializeTaskForExport`/
+  `buildExportPayload`/`stringifyExportPayload`/`buildExportFilename` (export
+  side, reusing render.js's `timestampToDate`/`formatDateForInput` rather than
+  a second copy of either — the same "import a single pure function from
+  render.js creates no cycle" precedent S20-10 already established for
+  `localMidnight`); `deserializeTaskFromImport` (import side);
+  `validateImportPayload`/`parseImportPayload` (S21-7, the whole-file
+  pre-write check).
+- `public/app.js` — imports six named exports from `dataTransfer.js`;
+  `exportBtn`/`importBtn`/`importFileInput`/`IMPORT_BTN_LABEL` DOM refs and
+  their three listeners (mirroring `weekStartSelect`'s "static single
+  control, own listener" precedent, S21-9); `handleExportClick` (S21-4/
+  S21-11); `handleImportClick`/`handleImportFileSelected` (S21-5/S21-7/
+  S21-8 — the confirm dialog, the re-validate-inside-the-mutation step, the
+  sequential `saveTask` loop with visible `Importing N of M…` progress, the
+  conditional `saveSettings`, and the final `refreshTasks`).
+- `public/index.html` — `#data-portability`/`#export-btn`/`#import-btn`/
+  `#import-file-input` (hidden), placed on the existing Tag Settings screen
+  (S21-9, no new view) between the week-start `<select>` and `#settings-list`;
+  matching CSS.
+- No change to `public/taskService.js`, `public/settingsService.js`,
+  `public/store.js`, `firestore.rules`, or `firestore.indexes.json` (S21-12)
+  — every write still goes through the existing `saveTask(uid, task)`/
+  `saveSettings(uid, settings)` whole-document paths, unmodified; nothing
+  about export/import is persisted as a new field, and nothing this step adds
+  needed a rules change to already pass `isValidTask()`/`isValidSettings()`
+  (both re-read in full before writing dataTransfer.js's validator, not
+  assumed).
+- No change to `FIREBASE.md` — step 21 introduces no new stored field, no
+  rules change, and no schema change for that file to describe.
+
+## Resume here — everything is implemented; a signed-in walkthrough is next
+
+**All 21 planned steps are now built.** There is no step 22 in the plan.
+What remains is exactly what every prior step's "Resume here" section has
+deferred and this one inherits in full:
+
+1. **Run the click-path below in an actual signed-in browser.** This has
+   never happened for ANY step in this project — every "verified" note above
+   and throughout this file means "verified unsigned-in, by driving the real
+   modules directly against synthetic data," never "seen working end to end
+   with a real Google sign-in against live Firestore." Step 21 adds its own
+   two items to this same click-path (see the new step 17 at the end of the
+   numbered list below): exporting a real account's data to a file, and
+   importing it back in (including onto a second account, to see the
+   upsert-by-id/settings-replace behavior S21-5/S21-10 describe actually
+   happen against live data rather than synthetic tasks).
+2. The two items already tracked in "Open items (not steps)" below — the
+   broken `firebase-hosting-merge.yml` CI workflow (`npm ci && npm run
+   build` with no `package.json` in this repo, and a push to `main` is a
+   production deploy) and `FIREBASE.md`'s stale "Security rules — three-way
+   mismatch" section — are both still open and unrelated to any step's
+   feature work; neither blocks the walkthrough above.
+
+```bash
+nvm use 24.14.1 && firebase serve --only hosting --port 5050
+```
+
+**Hard-reload the page (Cmd+Shift+R) before testing.** `firebase serve` sends no
+`Cache-Control` header, so the browser heuristically caches the ES modules and will
+happily run a stale `store.js` against a fresh `app.js`. That failure mode looks like
+a bogus `does not provide an export named ...` error and cost real time once already.
 
 **No step has been confirmed in a signed-in browser yet.** Everything below marked
 "verified" was verified unsigned-in, by driving the real modules with synthetic
@@ -331,6 +499,30 @@ a bogus `does not provide an export named ...` error and cost real time once alr
     task, then search something it doesn't match → it drops out of Focus
     too. Sign out with text still in the search box, sign back in → the box
     is empty.
+17. Click "Tag settings" → "Export to JSON file" → a file named
+    `todo-manager-export-YYYY-MM-DD.json` (today's LOCAL date) downloads;
+    open it → it's pretty-printed JSON with `"format":
+    "todo-manager-export"`, `"version": 1`, a `tasks` array covering every
+    task including anything currently in the Trash, and a `settings` object.
+    Click "Import from JSON file" and pick that same file back → a dialog
+    names the task count and says existing tasks with matching ids will be
+    overwritten and everything else left untouched, plus that tag
+    colors/quadrants/week-start will be replaced; confirm it → the button
+    reads "Importing N of M…" and disables itself while it runs, then the
+    screen refreshes with nothing visibly changed (a same-account
+    round-trip import is a no-op, per S21-5/S21-6). Edit a task's title,
+    re-import the SAME (now-stale) file → that edit is silently overwritten
+    back to the file's version, while a task created AFTER the export
+    (absent from the file) is left completely alone. Hand-edit the
+    downloaded file to change `"format"` to something else (or delete the
+    `"version"` key) and try importing it → the import is refused with a
+    message naming the problem, and re-check that nothing changed. Hand-edit
+    a task entry to set `"parentId"` to a made-up id that matches nothing in
+    the file or the account → import is refused naming that task, and
+    nothing is written. Sign into a SECOND account and import the first
+    account's export file → the second account gains all the first
+    account's tasks (new ids to it, so nothing to overwrite) and its tag
+    settings are replaced wholesale by the file's.
 
 **Files touched (steps 1–4):**
 - `public/taskService.js` — renamed from `todoService.js`; `addTask`, `fetchTasks`,
@@ -3308,6 +3500,94 @@ throughout, confirmed via the browser's own network log):**
   | 25 | `` (empty) | no query | full unfiltered list, no error |
   | 26 | `AND` | **parse error** | a lone operator is not a term |
   | 27 | `age > 20` | word("age") AND word(">") AND word("20") | no unit ⇒ NOT an age term; falls through to three bare words. Deliberate: silently assuming days would hide a typo |
+
+- **step 21 (S21-1)** — export contains EVERY task document, including
+  soft-deleted ones (plus the whole settings document). Spec:241-242 calls
+  the export "a real backup rather than a read-only snapshot" — a backup
+  that silently drops the Trash would lose everything deleted-but-not-purged
+  on restore.
+- **step 21 (S21-2)** — the file is one versioned JSON object:
+  `{ format: "todo-manager-export", version: 1, exportedAt, tasks, settings
+  }`. Import REJECTS a file whose `format`/`version` don't match those exact
+  literals, with a message naming what it found — never a silent
+  best-effort parse. `format`/`version` are free now and impossible to
+  retrofit later.
+- **step 21 (S21-3, the step's real hazard)** — Timestamps serialize to ISO
+  8601 UTC strings via ONE shared field list read by both directions
+  (`TIMESTAMP_FIELDS`, `dataTransfer.js`): `createdAt`, `updatedAt`,
+  `deletedAt`, `dueDate`, `occurrenceStart` (no `completedAt` — completion is
+  the boolean `completed`). `null` stays `null` both ways. Two hand-kept
+  lists would drift the first time a field is added, silently: an exported-
+  but-not-rehydrated field lands in Firestore as a plain string, and every
+  date comparison against it quietly returns garbage.
+- **step 21 (S21-3, mine — one recorded deviation from the decision's own
+  illustrative code)** — import reconstructs a Timestamp field as a plain
+  `new Date(iso)`, not `Timestamp.fromDate(new Date(iso))`. Firestore's
+  `setDoc` already converts a bare `Date` on write (`taskService.js`'s
+  `addTask` does exactly this for `dueDate`), so the document that lands is
+  identical either way; importing the real `Timestamp` class would have
+  required a `firebase/firestore` import inside `dataTransfer.js`, which
+  this project's browser-only import map cannot resolve under plain Node —
+  breaking the one verification path this project has (no npm, no bundler,
+  no test runner).
+- **step 21 (S21-4)** — download is a `Blob` + object URL + a synthetic `<a
+  download>` click, no library; `URL.revokeObjectURL` in a `finally`.
+  Filename `todo-manager-export-YYYY-MM-DD.json` from the LOCAL date (never
+  `toISOString().slice(0,10)`, which names yesterday's date west of
+  Greenwich — the same bug render.js's due-date helpers already guard
+  against). JSON is pretty-printed, 2-space indent — a file a human may read.
+- **step 21 (S21-5, the biggest call in this step)** — import is an upsert
+  by id, NOT a wipe-and-replace: every task in the file is written by its
+  own id; a task in the account but absent from the file is left completely
+  alone. A literal "restore a backup" reading (delete everything first) is
+  unrecoverable in an app with no undo, and one mis-clicked import would
+  destroy an account. A "replace everything" mode is deliberately not
+  implemented. The confirm dialog says, in plain words, that matching ids
+  get overwritten and everything else is left untouched.
+- **step 21 (S21-6)** — task ids are preserved verbatim on import. Minting
+  fresh ids would turn import into a whole-graph rewrite (every `parentId`,
+  every `ancestors` entry). Preserving ids is what makes import idempotent
+  (S21-5's "importing the same file twice is a no-op"). Accepted cost:
+  importing someone else's export into your account could in principle
+  collide on an id (Firestore auto-ids make this negligible; single-user
+  personal app).
+- **step 21 (S21-7)** — the ENTIRE file is validated before a single write;
+  any failure aborts the whole import with zero writes (same discipline as
+  step 17's tag-rewrite pre-check). Checks: `format`/`version`; `tasks` is
+  an array; `settings`, if present, is a plain object; every task's `id`
+  (non-empty string), `title` (1-1000 chars), `note` (≤10000 if present),
+  `tags` (≤50 if present), `ancestors` (≤6 if present — the 7-level cap,
+  `firestore.rules:56`); every non-null `parentId` resolves to a task in the
+  file OR already in the account; every ISO timestamp string parses to a
+  valid Date; `settings.tags` (≤500 keys if present), `settings.weekStart`
+  (`'sunday'`/`'monday'` if present — the two values `isValidSettings()`
+  accepts). On failure: one message naming the first problem plus the total
+  count.
+- **step 21 (S21-8)** — writes go through the existing paths, serialized,
+  with visible progress: `saveTask(uid, task)` per task, `saveSettings(uid,
+  settings)` once, the whole import wrapped in one `enqueueMutation`, one
+  `refreshTasks()` at the end. No `writeBatch` (caps at 500, a second write
+  vocabulary). The import button is disabled and shows `Importing N of M…`
+  during the (potentially multi-second) sequential loop. Known and accepted:
+  `saveTask` re-stamps `updatedAt` to the import time on every write;
+  `createdAt` IS preserved (what age/`age > Nd` search depend on). On a
+  write failure mid-import: stop at the first failure, report how many
+  tasks were written, refresh — no retry, no rollback.
+- **step 21 (S21-9)** — two buttons on the existing Tag Settings screen; no
+  new view. Import is a hidden `<input type="file" accept="application/
+  json">` triggered by the button's click. `currentView` gains no new id.
+- **step 21 (S21-10)** — settings import REPLACES the settings document
+  wholesale, asymmetric with tasks' per-id upsert on purpose: settings is
+  one document with no id-keyed granularity, so merging two tag-color maps
+  would produce a state that existed in neither the file nor the account. A
+  file with no `settings` key leaves settings untouched. The confirm dialog
+  states this asymmetry explicitly.
+- **step 21 (S21-11)** — export refreshes first (`await refreshTasks()`)
+  so it's never up to five minutes stale, then reads `getTasks()`/
+  `getTagSettings()` out of memory — no separate fetch path.
+- **step 21 (S21-12)** — no rules change, no index change, no new stored
+  field. Nothing about export/import is persisted beyond the tasks/settings
+  it reads and writes through the already-existing paths.
 
 ## Open items (not steps)
 

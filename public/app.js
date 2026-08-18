@@ -67,6 +67,19 @@ import {
 // (S19-7/S19-8). See searchQuery.js's own header for why step 20 needs this
 // kept out of app.js/render.js entirely.
 import { matchingTaskIds, expandMatchesWithAncestors } from "./searchQuery.js";
+// Step 21 (Export / import): the pure file-shape/serialize/deserialize/
+// validate functions (S21-2/S21-3/S21-7) — this file only owns the download
+// click, the hidden file input, the confirm dialogs, and the
+// enqueueMutation-wrapped saveTask/saveSettings write loop (S21-8). See
+// dataTransfer.js's own header for why none of that lives there instead.
+import {
+  buildExportPayload,
+  stringifyExportPayload,
+  buildExportFilename,
+  parseImportPayload,
+  validateImportPayload,
+  deserializeTaskFromImport,
+} from "./dataTransfer.js";
 import {
   getTasks,
   setTasks,
@@ -303,6 +316,17 @@ const weekStartSelect = document.getElementById("week-start-select");
 // Step 17 (S17-1): the one Undo affordance for the last tag rename/delete —
 // see tagUndoSnapshot's own comment below for exactly what it holds.
 const settingsUndoBtn = document.getElementById("settings-undo-btn");
+// Step 21 (S21-9): the two Data Portability actions, static single controls
+// on this same screen (there is no other settings surface in this app) — see
+// weekStartSelect's own precedent just above for why these get their own
+// listeners rather than routing through the delegated per-tag-row listeners
+// further down. `importFileInput` is hidden and triggered by `importBtn`'s
+// click rather than shown directly, so the button reads like every other
+// button here instead of a bare unstyled native file picker.
+const exportBtn = document.getElementById("export-btn");
+const importBtn = document.getElementById("import-btn");
+const importFileInput = document.getElementById("import-file-input");
+const IMPORT_BTN_LABEL = "Import from JSON file";
 
 // 1b. Task context menu (step 8) — right-click or long-press on a row.
 // `taskMenu` is one shared element (declared in index.html, outside both
@@ -454,6 +478,17 @@ settingsUndoBtn.addEventListener("click", () => {
 // delegated per-tag-row listeners the rest of this screen uses.
 weekStartSelect.addEventListener("change", () => {
   updateWeekStart(weekStartSelect.value);
+});
+// Step 21 (S21-9): Export/Import, the same "static single control, own
+// listener" precedent as weekStartSelect just above.
+exportBtn.addEventListener("click", () => {
+  handleExportClick();
+});
+importBtn.addEventListener("click", () => {
+  handleImportClick();
+});
+importFileInput.addEventListener("change", () => {
+  handleImportFileSelected();
 });
 
 function renderMainView() {
@@ -1547,6 +1582,153 @@ async function updateWeekStart(value) {
       await refreshTasks();
     }
   });
+}
+
+// Step 21 (S21-11): a real backup is never up to five minutes stale — this
+// refreshes BEFORE reading getTasks()/getTagSettings() out of memory, rather
+// than exporting whatever the store happened to be holding from the last
+// background refresh. No separate fetch path: buildExportPayload
+// (dataTransfer.js) reads the exact same in-memory shapes every other view
+// in this app already reads.
+async function handleExportClick() {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
+  await refreshTasks();
+  const payload = buildExportPayload(getTasks(), getTagSettings());
+  const json = stringifyExportPayload(payload);
+
+  // S21-4: Blob + object URL + a synthetic <a download> click, no library.
+  // revokeObjectURL runs in a `finally` so a click that throws (or one the
+  // browser silently swallows) can never leak the object URL.
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  try {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = buildExportFilename(new Date());
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+// Step 21 (S21-9): Import's own hidden `<input type="file">` is triggered by
+// this click rather than shown directly. The value is cleared first so
+// selecting the SAME file twice in a row still fires the input's `change`
+// event the second time (a browser does not fire `change` for a no-op
+// selection otherwise).
+function handleImportClick() {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+  importFileInput.value = "";
+  importFileInput.click();
+}
+
+// Step 21 (S21-5/S21-7/S21-8): the file input's `change` handler — the whole
+// import pipeline from "a File object exists" through the write loop.
+// Reachability: file input change -> FileReader -> parse -> validate ->
+// (confirm) -> enqueueMutation -> re-validate -> saveTask loop ->
+// saveSettings -> refreshTasks.
+function handleImportFileSelected() {
+  const file = importFileInput.files?.[0];
+  if (!file) return;
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
+  const reader = new FileReader();
+  reader.onerror = () => {
+    alert("Could not read the file.");
+  };
+  reader.onload = async () => {
+    const text = String(reader.result ?? "");
+
+    // S21-7: validated against every task CURRENTLY in the account (deleted
+    // or not — a parentId pointing at a soft-deleted-but-not-purged parent
+    // is still a real document, not a dangling reference) before the confirm
+    // dialog is even shown, so that dialog only ever offers an operation
+    // that CAN fully succeed (S17's identical rename/delete precedent).
+    const { ok, errors, payload } = parseImportPayload(text, getTasks());
+    if (!ok) {
+      alert(
+        `Cannot import this file: ${errors[0]}` +
+          (errors.length > 1 ? ` (${errors.length} problems found in total; nothing was changed.)` : " Nothing was changed.")
+      );
+      return;
+    }
+
+    // S21-5/S21-10: named explicitly, in plain words, so a user expecting a
+    // wipe-and-replace finds that out from THIS dialog, not from the result.
+    const taskCount = payload.tasks.length;
+    const confirmMessage =
+      `Import ${taskCount} task${taskCount === 1 ? "" : "s"} from this file? Existing tasks with matching ids ` +
+      "will be overwritten; every other task in your account is left completely untouched — this is a merge, " +
+      "not a wipe-and-replace." +
+      (payload.settings
+        ? " Tag colors, quadrant mappings and the week-start setting will be REPLACED wholesale by the file's."
+        : "");
+    if (!confirm(confirmMessage)) return;
+
+    await enqueueMutation(async () => {
+      const currentUserId = getCurrentUserId();
+      if (!currentUserId) return;
+
+      // S21-7 / this file's standing "re-read at run time" rule: a
+      // click-time-valid file could have a parentId dangle on a task some
+      // OTHER queued mutation deleted while this one waited its turn, so the
+      // whole file is checked again against whatever's actually in the
+      // account right now, before the first write.
+      const revalidated = validateImportPayload(payload, getTasks());
+      if (!revalidated.ok) {
+        alert(
+          `Import aborted: ${revalidated.errors[0]}` +
+            (revalidated.errors.length > 1
+              ? ` (${revalidated.errors.length} problems found in total; nothing was changed.)`
+              : " Nothing was changed.")
+        );
+        return;
+      }
+
+      // S21-8: hundreds of sequential setDocs take real seconds — a silent
+      // multi-second freeze reads as a hang, so the button is disabled and
+      // shows visible progress for the whole loop.
+      const total = payload.tasks.length;
+      importBtn.disabled = true;
+      let written = 0;
+      try {
+        for (let i = 0; i < total; i++) {
+          importBtn.textContent = `Importing ${i + 1} of ${total}…`;
+          const task = deserializeTaskFromImport(payload.tasks[i]);
+          await saveTask(currentUserId, task);
+          written++;
+        }
+        // S21-10: settings REPLACES the whole document, asymmetric with
+        // tasks' per-id upsert on purpose — merging two tag-color maps would
+        // produce a state that existed in neither the file nor the account.
+        // A file with no `settings` key leaves the account's settings
+        // untouched entirely.
+        if (payload.settings) {
+          await saveSettings(currentUserId, payload.settings);
+        }
+      } catch (error) {
+        // S21-8: stop at the first failure, report how many tasks were
+        // written, and refresh. No retry, no rollback (a rollback would
+        // itself be a destructive multi-write with no guarantee of
+        // completing).
+        console.error("Import stopped partway through a write failure:", error);
+        alert(
+          `Import stopped after writing ${written} of ${total} tasks. The list has been refreshed to show what actually saved.`
+        );
+      } finally {
+        importBtn.disabled = false;
+        importBtn.textContent = IMPORT_BTN_LABEL;
+        await refreshTasks();
+      }
+    });
+  };
+  reader.readAsText(file);
 }
 
 // Step 17 (S17-1/S17-3): the ONE undo slot for the last tag rename/delete —

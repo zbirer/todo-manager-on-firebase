@@ -3625,6 +3625,89 @@ user once the 21 steps were complete.
   that trigger was left exactly as it was because changing it is a separate
   decision (see the open item below).
 
+## Spec conformance review (2026-08-18)
+
+Four parallel reviews audited all 7,600 lines against `product-spec.md`'s 242.
+No defects were found in the areas the plan flagged as riskiest: `ancestors`/
+`parentId` consistency across add/reparent/cascade-delete/restore, the 7-level
+cap (client `depthOf` + `firestore.rules:56`), trash counting descendants
+individually with oldest-first eviction, un-complete reopening only its own
+cascade, and the boolean search parser's sigil distribution including temporal
+-term immunity. No dead controls and no dead CSS: all 39 element ids and all 8
+context-menu actions resolve to real handlers.
+
+### Fixed
+
+- **review-1 (menu move under a chosen parent)** — `product-spec.md:70-75` asks
+  for a menu move command *so the whole hierarchy stays reachable on a touch
+  screen without a precise drag*. The menu previously offered only `move-out`
+  and `move-to-top`, both of which reach the ROOT only, so reparenting onto a
+  specific other task still needed the exact drag the spec rules out. Added a
+  "Move under…" picker (`app.js:465`, markup `index.html:781`). Every refusal
+  rule is `canReparent` (taskTree.js:123) itself — the same function the live
+  drag and `performReparent`'s write-time re-check already call — so the picker
+  adds NO second copy of the self/cycle/depth-cap rules, and a candidate it
+  offers cannot be one the write then refuses. It builds its tree with
+  `buildTree(getTasks())` (full set, deleted included) to match both of those
+  call sites exactly; filtering deleted out here would have made the picker
+  disagree with the write. "Move to top level" was deliberately KEPT — the
+  picker subsumes it, but removing a working control was not part of the fix.
+- **review-2 (`dir="auto"` on the two typing boxes)** — `render.js` set it on
+  seven user-text elements while `index.html` had zero `dir` attributes, so
+  `#task-input` and `#search-input` — the first place a user types a Hebrew
+  title — were the only user-text fields without it (`product-spec.md:12-20`
+  calls mixed-direction titles "a normal case here, not an edge case").
+- **review-3 (import validates the quadrant enum)** — `validateImportPayload`
+  checked settings size and `weekStart` but never `tags[*].quadrant`. Now
+  rejects an invalid value by importing `QUADRANT_OPTIONS` from tagColors.js
+  rather than hand-copying a second list. Proportionate: `readTagQuadrant`
+  already degrades a bad value to null, so this reports bad input rather than
+  preventing corruption.
+- **review-4 (CSS dedupe)** — five identical `h2` rules, three `*-count`, three
+  `*-back-btn`, and `.task-item__recurrence-badge` duplicating
+  `.task-item__quadrant-badge`, all merged. Rendered appearance verified
+  unchanged via `getComputedStyle` on the live DOM, not by inspection.
+- **review-5 ("+ Subtask" at the depth cap)** — the button was offered at depth
+  7 and only alerted after the click. Now disabled at the cap, keyed off the
+  task's own `ancestors.length` rather than the `depth` render parameter, which
+  is hardcoded `0` for every Focus/Overdue row and would have disabled the
+  wrong rows. The handler's own depth check stays the authoritative gate.
+
+### Decided, not fixed — deliberate deviations
+
+- **review-D1 (`product-spec.md:145-149`, stop-recurrence)** — the spec says a
+  recurrence is stopped by DELETING the task, with "no separate 'stop
+  repeating' state that leaves an inert task behind". The app's "none" option
+  does exactly that. **Kept, knowingly.** Stopping a repeat without destroying
+  the task is genuinely useful and the spec sentence likely did not anticipate
+  it. Recorded here so it stops resurfacing as a finding in every future review.
+- **review-D2 (recurring parent's subtasks)** — completing a recurring parent
+  advances its due date and returns before the cascade (`app.js:936-966`), so
+  descendants are untouched. The spec never says what SHOULD happen to them.
+  **Left untouched, deliberately** — nothing is silently rewritten. Consequence
+  accepted: a recurring checklist's subtasks stay ticked after the first run.
+- **review-D3 (`product-spec.md:119`, tag color precedence)** — implemented as
+  "last COLORED tag wins" rather than the literal "last tag wins", so appending
+  an uncolored tag never strips a task's color. **Kept** (re-affirming D2 in
+  tagColors.js:90-99, now a reviewed decision rather than an assumed one).
+
+### Known limitation
+
+The "Move under…" picker lists candidates FLAT and alphabetically, with no tree
+structure shown. With many tasks, or two tasks sharing a title, choosing the
+right destination is ambiguous. Acceptable at this scale; if it bites, the fix
+is to render the candidates indented by depth rather than sorted by title.
+
+### Verification-tooling gap found and closed
+
+`xcheck.mjs` (the scratchpad cross-import checker, since `node --check` does not
+catch a missing export) had `dataTransfer.js` missing from its file list, so
+every import that module has ever had went unchecked while the runner still
+printed CLEAN. Caught only because a newly added import failed to move the
+count. `dataTransfer.js` and `auth.js` are now in the list — the count went
+101 → 104, still CLEAN. Any earlier PROGRESS entry citing an xcheck count did
+not cover `dataTransfer.js`.
+
 ## Open items (not steps)
 
 - `.github/workflows/firebase-hosting-merge.yml` is no longer broken (cleanup 3

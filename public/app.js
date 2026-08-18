@@ -281,6 +281,13 @@ const taskMenuClearDueDateItem = taskMenu.querySelector('[data-action="clear-due
 // item (S18-0): the editor itself offers "none" as one of its answers.
 const taskMenuSetRecurrenceItem = taskMenu.querySelector('[data-action="set-recurrence"]');
 
+// Fix (product-spec.md:70-75): the "Move under…" candidate picker — a second
+// floating panel opened from the menu's own item above (openMovePicker
+// below), never hidden/shown per task the way the other items are (always
+// offered — see the item's own comment in index.html for why).
+const movePicker = document.getElementById("move-picker");
+const movePickerList = document.getElementById("move-picker-list");
+
 // Step 12 (D1/D8): the Focus section/list — a third container rendered
 // alongside Inbox/main from the same renderTasks call (render.js), hidden
 // entirely by renderMainView below whenever nothing is pinned.
@@ -393,6 +400,7 @@ function openTaskMenuForTask(taskId, x, y, context = "main") {
   if (!task || task.deleted) return;
 
   closeTaskMenu();
+  closeMovePicker(); // a picker left open for a different task means nothing once a new menu opens
 
   // Only an Inbox row has anything to file out of the Inbox — same rule
   // updateTaskElement (render.js) uses for the inline per-row button.
@@ -431,6 +439,90 @@ function openTaskMenuForTask(taskId, x, y, context = "main") {
 
   menuOpen = true;
   beginInteraction(); // holds off the 5-minute refresh while the menu is open
+}
+
+// Fix (product-spec.md:70-75): the "Move under…" picker's own open state,
+// same single-boolean-guard shape as `menuOpen` above and for the identical
+// reason — idempotent close, exactly one interaction accounted for.
+let pickerOpen = false;
+
+function closeMovePicker() {
+  if (!pickerOpen) return; // already closed via the other path
+  pickerOpen = false;
+  movePicker.hidden = true;
+  delete movePicker.dataset.taskId;
+  endInteraction();
+}
+
+// Builds and opens the candidate list for `taskId`, positioned where the
+// task menu that opened it was (so the picker reads as "the menu grew a
+// submenu" rather than popping up somewhere unrelated). Every refusal rule
+// is `canReparent` (taskTree.js) itself — the exact same function
+// performReparent's write-time re-check calls — so a candidate that would be
+// refused there (self, a descendant, the current parent as a no-op, too
+// deep for the 7-level cap) never gets offered here in the first place; the
+// list only omits refusals, it doesn't add any of its own.
+function openMovePicker(taskId) {
+  const task = getTasks().find((t) => t.id === taskId);
+  if (!task || task.deleted) return;
+
+  const tree = buildTree(getTasks());
+  const subtreeHeight = computeSubtreeHeight(tree, taskId);
+  const candidates = getTasks()
+    .filter((t) => !t.deleted && canReparent(tree, taskId, t.id, subtreeHeight))
+    .sort((a, b) => a.title.localeCompare(b.title));
+
+  movePickerList.replaceChildren();
+
+  // D9's root-level move, folded into this same picker (the brief for this
+  // fix explicitly wants "top level" reachable from here too) — shown under
+  // the identical no-op rule "Move to top level" itself uses (that item's
+  // own comment above), so choosing this can never be a silent no-op either.
+  if (task.parentId != null) {
+    const topOption = document.createElement("button");
+    topOption.type = "button";
+    topOption.className = "task-menu__item move-picker__item";
+    topOption.textContent = "Top level";
+    topOption.dataset.parentId = ""; // sentinel: performReparent's `null` (root)
+    movePickerList.appendChild(topOption);
+  }
+
+  for (const candidate of candidates) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "task-menu__item move-picker__item";
+    button.textContent = candidate.title;
+    button.dir = "auto"; // titles are Hebrew-with-embedded-English-tags (product-spec.md §1), same as render.js:570
+    button.dataset.parentId = candidate.id;
+    movePickerList.appendChild(button);
+  }
+
+  // A task with no valid destination at all (e.g. a lone root already at the
+  // depth cap with nothing shallow enough to land under) still gets a
+  // legible panel instead of a mysteriously empty one.
+  if (movePickerList.children.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "move-picker__empty";
+    empty.textContent = "No valid destination for this task.";
+    movePickerList.appendChild(empty);
+  }
+
+  movePicker.dataset.taskId = taskId;
+  movePicker.hidden = false;
+
+  // Reuses the task menu's own last clamped position (still sitting in its
+  // inline style even while hidden) as the starting point, then re-clamps
+  // against the picker's own (different) box size.
+  movePicker.style.left = taskMenu.style.left;
+  movePicker.style.top = taskMenu.style.top;
+  const rect = movePicker.getBoundingClientRect();
+  const maxLeft = Math.max(0, window.innerWidth - rect.width);
+  const maxTop = Math.max(0, window.innerHeight - rect.height);
+  movePicker.style.left = `${Math.min(Math.max(0, parseFloat(movePicker.style.left) || 0), maxLeft)}px`;
+  movePicker.style.top = `${Math.min(Math.max(0, parseFloat(movePicker.style.top) || 0), maxTop)}px`;
+
+  pickerOpen = true;
+  beginInteraction(); // holds off the 5-minute refresh while the picker is open
 }
 
 // 2. View dispatch table. Step 1 left only `main` here as a scaffold; step 9
@@ -777,6 +869,12 @@ async function refreshTasks() {
     if (menuOpen) {
       const menuTask = tasks.find((t) => t.id === taskMenu.dataset.taskId);
       if (!menuTask || menuTask.deleted) closeTaskMenu();
+    }
+    // Same staleness check, same reasoning, for the picker's own task —
+    // built from a taskId, not a live reference, exactly like the menu above.
+    if (pickerOpen) {
+      const pickerTask = tasks.find((t) => t.id === movePicker.dataset.taskId);
+      if (!pickerTask || pickerTask.deleted) closeMovePicker();
     }
   } catch (error) {
     console.error("Failed to refresh tasks:", error);
@@ -2978,11 +3076,34 @@ taskMenu.addEventListener("click", async (event) => {
   if (action === "add-subtask") await handleAddSubtaskClick(taskId);
   else if (action === "move-out") await handleMoveOutOfInboxClick(taskId);
   else if (action === "move-to-top") await performReparent(taskId, null);
-  else if (action === "toggle-pin") await handleTogglePinClick(taskId);
+  else if (action === "move-under") {
+    // The picker opens synchronously inside this same click's dispatch, so
+    // the document-level outside-click listener below (still bubbling to
+    // for this very click) would otherwise see "a click outside #move-picker"
+    // and close it on the spot — armClickSuppression is the exact same fix
+    // long-press's own ghost click needed above, applied to this new panel.
+    openMovePicker(taskId);
+    armClickSuppression();
+  } else if (action === "toggle-pin") await handleTogglePinClick(taskId);
   else if (action === "edit-due-date") handleEditDueDateMenuClick(taskId, context);
   else if (action === "clear-due-date") await handleClearDueDateClick(taskId);
   else if (action === "set-recurrence") await handleSetRecurrenceClick(taskId);
   else if (action === "delete") await handleDeleteClick(taskId);
+});
+
+// Choosing a candidate: close first (idempotent — see closeMovePicker), then
+// route through the one shared performReparent every other reparent path
+// already uses — no second reparent implementation here either. The empty
+// state's `<p>` carries no `data-parent-id`, so it's inert against this
+// delegated listener's own `closest` guard.
+movePickerList.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-parent-id]");
+  if (!button) return;
+  const taskId = movePicker.dataset.taskId;
+  const newParentId = button.dataset.parentId === "" ? null : button.dataset.parentId;
+  closeMovePicker();
+  if (!taskId) return;
+  await performReparent(taskId, newParentId);
 });
 
 // Escape closes the menu from anywhere in the document, not just while an
@@ -2999,20 +3120,28 @@ document.addEventListener("keydown", (event) => {
     cancelDrag();
     return;
   }
+  // The picker is the frontmost panel whenever it's open (it only ever opens
+  // from a menu that closed itself first), so it takes Escape before the
+  // menu gets a chance to.
+  if (pickerOpen) {
+    closeMovePicker();
+    return;
+  }
   if (menuOpen) closeTaskMenu();
 });
 
-// A click anywhere outside the menu closes it. Checked against
-// suppressNextClick first so the ghost click that follows the long-press
-// which just opened this same menu doesn't immediately close it again (see
-// armClickSuppression above) — that click's target is the row underneath
-// the menu, which is "outside" the menu element and would otherwise match
-// here on the very same gesture that opened it.
+// A click anywhere outside the menu (or the picker) closes it. Checked
+// against suppressNextClick first so the ghost click that follows the
+// long-press which just opened this same menu doesn't immediately close it
+// again (see armClickSuppression above) — that click's target is the row
+// underneath the menu, which is "outside" the menu element and would
+// otherwise match here on the very same gesture that opened it. The picker's
+// own open click (choosing "Move under…" from the menu) needs the identical
+// suppression, armed at that call site above for the same reason.
 document.addEventListener("click", (event) => {
   if (suppressNextClick) return;
-  if (!menuOpen) return;
-  if (event.target.closest("#task-menu")) return; // handled by the menu's own click listener above
-  closeTaskMenu();
+  if (menuOpen && !event.target.closest("#task-menu")) closeTaskMenu();
+  if (pickerOpen && !event.target.closest("#move-picker")) closeMovePicker();
 });
 
 // Scroll doesn't bubble like click does, so this has to be registered in the
@@ -3021,6 +3150,7 @@ window.addEventListener(
   "scroll",
   () => {
     if (menuOpen) closeTaskMenu();
+    if (pickerOpen) closeMovePicker();
   },
   true
 );
@@ -3084,6 +3214,7 @@ monitorAuthState(async (uid) => {
     // still holding the PREVIOUS account's query.
     searchInput.value = "";
     closeTaskMenu(); // a menu open for one account's task means nothing once signed out
+    closeMovePicker(); // ditto for a picker built from one account's tasks
     cancelDrag(); // ditto for a drag in progress — see step 10's cancelDrag
     statusText.textContent = "Please sign in to access your task manager.";
     loginBtn.style.display = "inline-block";

@@ -713,7 +713,7 @@ function createTaskElement(taskId) {
 // call site (search is out of scope for the Overdue screen — S19-6) needs no
 // change at all; only renderTasks below ever passes a real value.
 function updateTaskElement(entry, task, depth, tagSettings, isSearchContext = false) {
-  const { li, checkbox, label, titleInput, noteDisplay, noteInput, moveOutButton } = entry;
+  const { li, checkbox, label, titleInput, noteDisplay, noteInput, moveOutButton, addSubtaskButton } = entry;
 
   entry.task = task;
 
@@ -745,6 +745,21 @@ function updateTaskElement(entry, task, depth, tagSettings, isSearchContext = fa
 
   // Only an Inbox row has anything to file out of the Inbox.
   moveOutButton.style.display = task.inInbox ? "" : "none";
+
+  // Fix: disable rather than let the click-time alert (app.js's
+  // handleAddSubtaskClick) be the only thing standing between the user and a
+  // refused add — the 7-level cap is `ancestors.size() <= 6`
+  // (firestore.rules:56), so a task already carrying 6 ancestors has nowhere
+  // deeper to put a child. Deliberately `task.ancestors.length`, NOT the
+  // `depth` parameter above: `depth` is hardcoded to 0 for every Focus/
+  // Overdue row (D2/D4 — those views render flat, no indentation), which
+  // would make a deeply-nested pinned or overdue task's button read as
+  // "shallow" no matter how deep it actually sits. `ancestors` is the one
+  // depth signal that stays correct in all three row contexts a task can
+  // render in. This is a UI hint only — handleAddSubtaskClick's own re-check
+  // against a fresh tree at click time (and again inside the queued
+  // mutation) remains the actual guard.
+  addSubtaskButton.disabled = (task.ancestors?.length ?? 0) >= 6;
 
   // Title display/input only get synced from `task` while this row isn't
   // mid-edit. An open title edit holds text the user hasn't saved yet, and a

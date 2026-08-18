@@ -14,6 +14,11 @@
 // file ever calls saveTask, saveSettings, or touches the DOM.
 
 import { timestampToDate, formatDateForInput } from "./render.js";
+// Fix: the canonical set of valid quadrant values, reused rather than
+// hand-copied — QUADRANT_OPTIONS is already tagColors.js's own exported
+// list (the settings screen's <select> options), so this file's validation
+// and the app's own quadrant resolution can never silently drift apart.
+import { QUADRANT_OPTIONS } from "./tagColors.js";
 
 // S21-2: the one shape every export/import round trip agrees on. `format`
 // and `version` are the one thing that is free now and impossible to
@@ -208,6 +213,24 @@ function validateSettings(settings, errors) {
       errors.push('"settings.tags" must be an object.');
     } else if (Object.keys(settings.tags).length > SETTINGS_TAGS_MAX_KEYS) {
       errors.push(`"settings.tags" has more than ${SETTINGS_TAGS_MAX_KEYS} entries.`);
+    } else {
+      // Fix: `entry.quadrant` was never checked here — readTagQuadrant
+      // (tagColors.js) already degrades any bad value to null at READ time,
+      // so a malformed import could never corrupt resolution, but it could
+      // still silently import garbage with no warning. This only rejects a
+      // PRESENT, non-null bad value — absent/null is the normal "no quadrant
+      // assigned" case (Q1) and stays valid, same as readTagQuadrant treats
+      // it. A malformed entry (not an object) is left to whatever it is;
+      // this file's own deserialize/normalize step handles that shape
+      // problem, not this quadrant-specific check.
+      for (const [tagName, entry] of Object.entries(settings.tags)) {
+        if (!isPlainObject(entry) || entry.quadrant == null) continue;
+        if (!QUADRANT_OPTIONS.includes(entry.quadrant)) {
+          errors.push(
+            `"settings.tags.${tagName}.quadrant" must be one of ${QUADRANT_OPTIONS.join(", ")} — found ${JSON.stringify(entry.quadrant)}.`
+          );
+        }
+      }
     }
   }
   if ("weekStart" in settings && settings.weekStart != null && !VALID_WEEK_STARTS.includes(settings.weekStart)) {

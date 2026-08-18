@@ -203,17 +203,10 @@
        in this pill's text. Sits in the same flex-wrap meta row as due-date/age
        so it never disturbs an RTL title above it; hidden entirely (display:
        none, set in render.js) for an unranked task rather than shown empty. */
-    .task-item__quadrant-badge {
-      display: inline-block;
-      padding: 1px 6px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 600;
-      background-color: rgba(255, 255, 255, 0.25);
-    }
-    /* Step 18 (Recurrence): same compact-pill shape as the quadrant badge
-       just above, in the same meta row; hidden entirely (display: none, set
-       in render.js) for a non-recurring task rather than shown empty. */
+    /* Step 18 (Recurrence): same compact-pill shape reused for the recurrence
+       badge below — hidden entirely (display: none, set in render.js) for a
+       non-recurring task rather than shown empty, same as the quadrant badge. */
+    .task-item__quadrant-badge,
     .task-item__recurrence-badge {
       display: inline-block;
       padding: 1px 6px;
@@ -245,7 +238,16 @@
       background-color: rgba(0, 0, 0, 0.25);
       color: inherit;
     }
-    #inbox-section h2 {
+    /* Fix 4 (dedupe): every section heading in this app — Inbox/Focus (in the
+       main view) and the three standalone screens (Trash/Overdue/Settings) —
+       shares this exact rule. Grouped into one selector instead of five
+       byte-identical copies; each `#foo h2` occurrence below this point was
+       one of those copies. */
+    #inbox-section h2,
+    #focus-section h2,
+    #trash-view h2,
+    #overdue-view h2,
+    #settings-view h2 {
       font-size: 16px;
       margin-bottom: 4px;
     }
@@ -261,10 +263,6 @@
        exact same .task-item markup/styling as the main list — a pinned row
        looks identical whether you're looking at its Focus copy or its
        normal-place copy. */
-    #focus-section h2 {
-      font-size: 16px;
-      margin-bottom: 4px;
-    }
     #focus-section {
       padding-bottom: 8px;
       border-bottom: 1px solid #d1d5db;
@@ -310,6 +308,38 @@
     }
     .task-menu__item--danger {
       color: #fca5a5;
+    }
+    /* Fix (product-spec.md:70-75): the "Move under…" picker — a `.task-menu`
+       (so it inherits that class's box/position/`:not([hidden])` rules
+       wholesale) plus its own two additions: a small caption, and a
+       scrollable inner region so a large task list's candidate buttons don't
+       grow the picker off-screen instead of scrolling within it. Candidate
+       buttons themselves reuse `.task-menu__item` verbatim (app.js sets both
+       classes) — same look, no second button style to keep in sync. */
+    .move-picker {
+      min-width: 220px;
+      max-width: 320px;
+    }
+    .move-picker__title {
+      padding: 6px 12px 4px;
+      font-size: 12px;
+      font-weight: 600;
+      opacity: 0.7;
+    }
+    .move-picker__list {
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      max-height: 260px;
+    }
+    .move-picker__item {
+      width: 100%;
+    }
+    .move-picker__empty {
+      padding: 8px 12px;
+      font-size: 13px;
+      opacity: 0.7;
+      margin: 0;
     }
     /* Step 10: the per-row drag handle. `touch-action: none` is load-bearing,
        not decorative — without it, a touch device's own scroll gesture can
@@ -367,11 +397,12 @@
     /* Step 9: the Trash view. Reuses the app's existing color language
        (danger red for the destructive framing) rather than inventing a new
        one. */
-    #trash-view h2 {
-      font-size: 16px;
-      margin-bottom: 4px;
-    }
-    #trash-count {
+    /* Fix 4 (dedupe): the "N of cap" byline under each of the three standalone
+       screens' headings — Trash, Overdue, Settings — shares this exact rule;
+       `#overdue-count`/`#settings-count` below used to repeat it verbatim. */
+    #trash-count,
+    #overdue-count,
+    #settings-count {
       font-size: 13px;
       color: #6b7280;
       margin: 4px 0 12px;
@@ -404,7 +435,12 @@
       color: white;
       margin: 8px 0;
     }
-    #trash-back-btn {
+    /* Fix 4 (dedupe): the "← Back" button on all three standalone screens
+       shares this exact rule too — `#overdue-back-btn`/`#settings-back-btn`
+       below used to repeat it verbatim. */
+    #trash-back-btn,
+    #overdue-back-btn,
+    #settings-back-btn {
       background-color: #6b7280;
       color: white;
       margin-bottom: 8px;
@@ -412,24 +448,10 @@
     /* Step 13 (Dates, D4): the Overdue screen — a third view panel, styled
        like Trash's (same button color language) since it's the same kind of
        "step out of the main view into a dedicated screen" pattern. */
-    #overdue-view h2 {
-      font-size: 16px;
-      margin-bottom: 4px;
-    }
-    #overdue-count {
-      font-size: 13px;
-      color: #6b7280;
-      margin: 4px 0 12px;
-    }
     #overdue-btn {
       background-color: #b45309;
       color: white;
       margin: 8px 0;
-    }
-    #overdue-back-btn {
-      background-color: #6b7280;
-      color: white;
-      margin-bottom: 8px;
     }
     /* Step 14 (Tag colors, D4): the Tag Settings screen — a fourth view panel,
        styled like Trash's and Overdue's for the same reason they match each
@@ -437,24 +459,10 @@
        screen" pattern, not a new one. Step 15 adds a quadrant control to each
        row here; the row is a flex line precisely so that is one more child,
        not a re-layout. */
-    #settings-view h2 {
-      font-size: 16px;
-      margin-bottom: 4px;
-    }
-    #settings-count {
-      font-size: 13px;
-      color: #6b7280;
-      margin: 4px 0 12px;
-    }
     #settings-btn {
       background-color: #4b5563;
       color: white;
       margin: 8px 0;
-    }
-    #settings-back-btn {
-      background-color: #6b7280;
-      color: white;
-      margin-bottom: 8px;
     }
     /* Step 17: the single in-memory undo affordance — an amber warning color
        (distinct from every other button here) so it reads as "time-limited",
@@ -590,6 +598,7 @@
         <input
           type="text"
           id="task-input"
+          dir="auto"
           placeholder="Add task (e.g., Buy groceries #food @shop)"
           required
         />
@@ -608,6 +617,7 @@
       <input
         type="text"
         id="search-input"
+        dir="auto"
         placeholder="Search (e.g. urgent #private @office)"
       />
       <button type="button" id="trash-btn">Trash</button>
@@ -765,6 +775,16 @@
          through the exact same reparent handler the drag-drop path uses
          (performReparent in app.js), not a parallel implementation. -->
     <button type="button" class="task-menu__item" data-action="move-to-top">Move to top level</button>
+    <!-- Fix (product-spec.md:70-75): a precise-drag-free way to reparent onto
+         a SPECIFIC other task, not just the root "move-to-top" reaches above
+         — "the whole hierarchy stays reachable on a touch screen without a
+         precise drag." Always offered (unlike "Move to top level", which
+         hides for a task that's already a root — there's always some other
+         valid destination to browse to, and the picker's own empty state
+         covers the rare task with none). Opens #move-picker (app.js's
+         openMovePicker); the actual write still goes through the one
+         performReparent function every other reparent path already uses. -->
+    <button type="button" class="task-menu__item" data-action="move-under">Move under…</button>
     <!-- Step 12 (D7): pin/unpin a task into Focus — context-menu only, no
          inline per-row button, same pattern as "Move to top level" above.
          Label text and hidden/shown state are set per-open by app.js's
@@ -788,6 +808,23 @@
          own "none" answer is how a misconfigured rule gets corrected. -->
     <button type="button" class="task-menu__item" data-action="set-recurrence">Set recurrence</button>
     <button type="button" class="task-menu__item task-menu__item--danger" data-action="delete">Delete</button>
+  </div>
+
+  <!-- Fix (product-spec.md:70-75): the "Move under…" candidate picker —
+       a second floating panel, opened from #task-menu's own item above,
+       styled as `.task-menu` too (same "one shared element, moved and
+       re-labeled per open" pattern, same floating-list look) but a SEPARATE
+       element, because its content (a task-id-keyed list of titles built
+       fresh per open) is nothing like the menu's fixed action list.
+       `#move-picker-list` is populated by app.js's openMovePicker with one
+       button per valid destination — every task except this one, its own
+       descendants (a cycle), and anything too deep for the moved subtree to
+       fit under (the 7-level cap) — plus a leading "Top level" choice.
+       `dir="auto"` is set per-button in app.js, exactly as render.js:570
+       does for every other element that shows a task title. -->
+  <div id="move-picker" class="task-menu move-picker" hidden>
+    <div class="move-picker__title">Move under…</div>
+    <div id="move-picker-list" class="move-picker__list"></div>
   </div>
 
   <!-- Pointing to our main orchestration file -->

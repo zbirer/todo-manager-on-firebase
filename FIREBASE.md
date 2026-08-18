@@ -175,6 +175,7 @@ entry's shape.
 | `tags` | map, <= 500 keys | Keyed by the **full tag token including its sigil** (`#work` and `@work` are different tags). Each value is an **object**, not a color string — step 15 (quadrant mapping) adds a `quadrant` key to this same entry rather than forking a second map |
 | `tags.<tag>.fg` | string | Foreground color, `#rrggbb`. Written by the Tag Settings screen. An entry missing either half, or holding anything that isn't a 6-digit hex string, reads as "no colors assigned" rather than being passed through to the DOM |
 | `tags.<tag>.bg` | string | Background color, `#rrggbb`. Same rules as `fg` — a color is only ever assigned as a complete pair, so a single change through the UI always writes both |
+| `tags.<tag>.quadrant` | string \| absent | Step 15 (Quadrant mapping). One of `'urgent-important'`, `'not-urgent-important'`, `'urgent-not-important'`, `'not-urgent-not-important'`. **Absent means the tag is unmapped**, which is not the same as `'not-urgent-not-important'` — an unmapped tag contributes nothing to its task's quadrant, while a bottom-quadrant tag ranks the task and sorts it above a task with no mapped tag at all. Read null-safely: an entry with no `quadrant`, or one holding a value outside the four, reads as unmapped. Colors and quadrant are independent — a tag may have either, both, or neither. Not constrained by `isValidSettings()`, so no rules change was needed |
 | `weekStart` | `'sunday'` \| `'monday'` | **Not written by any code yet** — step 20 (advanced search) owns it. Already validated by `isValidSettings()`. Reads and writes carry it through untouched, so a step-14 color change can never erase it out of the same whole-document write |
 
 Reads go through `getDoc` and normalize on the way in: a document that does not
@@ -188,6 +189,18 @@ A row's color is resolved per render as: parse the task's **title** for tags in
 **string order**, then take the **last one that has colors assigned**. In a
 Hebrew title that is the tag furthest *left* on screen. Nothing about a task's
 colors is stored on the task.
+
+A row's **quadrant resolves by a deliberately different rule** — do not
+generalize the color rule to it. Every mapped tag in the title contributes, and
+the task takes the **highest urgency and the highest importance independently**
+across all of them (escalate, never average), so position in the string is
+irrelevant and there is no "winner". A task whose tags are all unmapped is
+*unranked*, an explicit fifth bucket that sorts last — never guessed into a
+quadrant. Like colors, the resolved quadrant is computed per render and
+**never stored on the task**: storing it would go stale the instant the user
+edited a tag mapping, with no write touching the affected tasks. That is also
+why it can never be a Firestore `orderBy`, and why
+[firestore.indexes.json](firestore.indexes.json) stays empty.
 
 Reads use `query(..., orderBy("createdAt", "desc"))` — a single-field sort, served
 by the automatic index. That is why [firestore.indexes.json](firestore.indexes.json)

@@ -2278,6 +2278,23 @@ driving the real modules directly):**
   stored (R2), so nothing about the schema or its validation needed to
   change; `firestore.indexes.json` stays the empty array it always was.
 
+- **step 16 review round — a "place at top of group" value comes from a true
+  `Math.min` over stored `order`, never from `sortTasks(...)[0]`.** As shipped,
+  `performReparent` took its reference sibling from the rank-first sorted list's
+  first element, an assumption that was correct before step 16 and silently
+  false after it: that element is the highest-*ranked* sibling, whose `order`
+  can be far above the group's minimum. Reproduced in the browser against the
+  real modules — siblings `{A: rank 0, order -100}` and `{B: rank 4, order
+  -5000}` gave `sorted[0].order - 1000 = -1100`, which does **not** sit below
+  B. Now mirrors `taskService.js`'s creation path exactly
+  (`Math.min(...orders) - 1000`, `0` for an empty group). Later steps: sorting
+  for display and selecting an extreme are different questions — any future
+  "top/bottom of group" arithmetic reads raw `order`, never a display index.
+- **step 15/16 documentation — `tags.<tag>.quadrant` is now in FIREBASE.md's
+  settings-schema table**, including the load-bearing distinction that an
+  *absent* `quadrant` (unmapped, sorts last) is not the same as
+  `'not-urgent-not-important'` (mapped, ranks above unmapped).
+
 ## Open items (not steps)
 
 - `.github/workflows/firebase-hosting-merge.yml` deploys to the live site on push to

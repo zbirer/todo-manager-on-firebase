@@ -1958,21 +1958,22 @@ async function performReparent(taskId, newParentId) {
     const newAncestors = newParentTask ? [...ancestorChain(freshTree, newParentTask.id), newParentTask.id] : [];
     const newInInbox = newParentTask ? newParentTask.inInbox : currentTask.inInbox;
 
-    // D7: top of the new parent's (or the root group's) live children.
-    // Reuses computeReorderOrder — step 10's existing top-of-group helper —
-    // rather than a second ordering rule: passing `prevTask: null` always
-    // takes its "top" branch (nextTask.order - 1000, or 0 when the group is
-    // empty), exactly D7's formula, and can never return `renumber: true`
-    // (that branch only ever fires between two non-null neighbours). Step 16:
-    // `sortTasks` now needs a rank Map to order by — built fresh here (this
-    // runs once per reparent, not per comparison) — but D7's own "top of
-    // group" formula is otherwise untouched: `order` is only ever this
-    // reparented task's tie-break within whichever rank it actually resolves
-    // to, never a claim about its final on-screen position.
-    const newSiblingsRaw = getTasks().filter((t) => !t.deleted && t.id !== taskId && t.parentId === newParentId);
-    const newSiblingsRankMap = computeQuadrantRankMap(newSiblingsRaw, getTagSettings());
-    const newSiblings = sortTasks(newSiblingsRaw, newSiblingsRankMap);
-    const { order: newOrder } = computeReorderOrder(null, newSiblings.length > 0 ? newSiblings[0] : null);
+    // D7: top of the new parent's (or the root group's) live children —
+    // computed as a true minimum over the siblings' STORED `order`, the same
+    // formula and the same idiom as task creation (taskService.js:51).
+    //
+    // Deliberately NOT `sortTasks(newSiblings)[0]`. Since step 16 that first
+    // element is the highest-*ranked* sibling, and its rank says nothing
+    // about its `order`, so `[0].order - 1000` can still sit above a sibling
+    // holding a much smaller stored value. `order` is only ever this task's
+    // tie-break *within* whichever rank it resolves to, and this function
+    // cannot know that rank's membership — so the only value that places it
+    // first in every tier it might land in is one below the whole group's
+    // minimum. Sorting for display and picking a minimum are different
+    // questions; this one wants the minimum.
+    const newSiblings = getTasks().filter((t) => !t.deleted && t.id !== taskId && t.parentId === newParentId);
+    const newSiblingOrders = newSiblings.map((t) => t.order);
+    const newOrder = newSiblingOrders.length > 0 ? Math.min(...newSiblingOrders) - 1000 : 0;
 
     // Issue 7 fix: snapshotted ONCE before the loop, matching step 5/6/8's
     // established idiom (`currentById`/`currentParent`) — nothing else can

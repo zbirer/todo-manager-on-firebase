@@ -385,7 +385,14 @@ export function computeMainListOrderIndex(nonDeletedTasks, rankMap = new Map()) 
 // every row's colors are resolved from it plus the row's own title on every
 // update, which is what makes "re-typing the title to reorder tags changes the
 // color" (product-spec.md §4) need no special re-color step at all.
-export function renderTasks(containers, focusContainer, onEditCancelled, tagSettings) {
+//
+// Step 19: `searchContextIds` (a `Set<taskId>` of tasks visible only as
+// ancestor context for a match elsewhere, not matches themselves — S19-4) is
+// computed once by app.js's renderMainView, same "caller computes it once,
+// this file just applies it per row" shape as `tagSettings`. Defaults to an
+// empty Set so a search-inactive render (an empty box — see searchQuery.js's
+// own comment on why that degrades to "everything matches") dims nothing.
+export function renderTasks(containers, focusContainer, onEditCancelled, tagSettings, searchContextIds = new Set()) {
   const seenIds = new Set();
 
   // Step 16 (R3): exactly ONE Map<taskId, rank> for this whole render pass —
@@ -430,21 +437,23 @@ export function renderTasks(containers, focusContainer, onEditCancelled, tagSett
         entry = createTaskElement(task.id);
         entriesByTaskId.set(task.id, entry);
       }
-      updateTaskElement(entry, task, depth, tagSettings);
+      updateTaskElement(entry, task, depth, tagSettings, searchContextIds.has(task.id));
     }
   }
 
   // Focus is flat (D2) — no tree, no depth. Every row renders at depth 0,
   // built/updated with the exact same createTaskElement/updateTaskElement
   // pair the tree containers use (D1: full per-row behavior inherited), just
-  // keyed into the separate `focusEntriesByTaskId` Map instead.
+  // keyed into the separate `focusEntriesByTaskId` Map instead. Step 19:
+  // dimmed the same way — a pinned task can itself be only ancestor context
+  // for a match elsewhere in its own subtree, same as any tree row.
   for (const task of focusTasks) {
     let entry = focusEntriesByTaskId.get(task.id);
     if (!entry) {
       entry = createTaskElement(task.id);
       focusEntriesByTaskId.set(task.id, entry);
     }
-    updateTaskElement(entry, task, 0, tagSettings);
+    updateTaskElement(entry, task, 0, tagSettings, searchContextIds.has(task.id));
   }
 
   // Drop entries for tasks that left every rendered tree container this pass
@@ -700,12 +709,18 @@ function createTaskElement(taskId) {
   };
 }
 
-function updateTaskElement(entry, task, depth, tagSettings) {
+// Step 19 (S19-4): `isSearchContext` defaults to `false` so renderOverdue's
+// call site (search is out of scope for the Overdue screen — S19-6) needs no
+// change at all; only renderTasks below ever passes a real value.
+function updateTaskElement(entry, task, depth, tagSettings, isSearchContext = false) {
   const { li, checkbox, label, titleInput, noteDisplay, noteInput, moveOutButton } = entry;
 
   entry.task = task;
 
-  li.className = "task-item" + (task.completed ? " task-item--completed" : "");
+  li.className =
+    "task-item" +
+    (task.completed ? " task-item--completed" : "") +
+    (isSearchContext ? " task-item--search-context" : "");
   // Step 14 (D3): the WHOLE ROW takes the winning tag's colors. The winner is
   // the last COLORED tag in the title string (resolveTagColor, tagColors.js —
   // read its comment for why "last colored", and for why step 15's quadrant

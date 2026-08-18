@@ -61,6 +61,12 @@ import {
   canReparent,
   rewriteDescendantAncestors,
 } from "./taskTree.js";
+// Step 19 (Search — basic): the pure leaf-match/ancestor-expansion pair
+// (S19-1/S19-4) — this file only owns the search box's DOM element, the
+// per-keystroke re-render, and the Escape-to-clear/sign-out-clear lifecycle
+// (S19-7/S19-8). See searchQuery.js's own header for why step 20 needs this
+// kept out of app.js/render.js entirely.
+import { matchingTaskIds, expandMatchesWithAncestors } from "./searchQuery.js";
 import {
   getTasks,
   setTasks,
@@ -228,6 +234,12 @@ const taskInput = document.getElementById("task-input");
 const taskList = document.getElementById("task-list");
 const inboxList = document.getElementById("inbox-list");
 const showCompletedToggle = document.getElementById("show-completed-toggle");
+// Step 19 (Search — basic): the search box and the "no results" message that
+// replaces the lists in place (S19-9) — see renderMainView below for the
+// filter itself and the keydown/input listeners further down for the
+// per-keystroke re-render (S19-7) and Escape-to-clear (S19-8).
+const searchInput = document.getElementById("search-input");
+const searchEmptyMessage = document.getElementById("search-empty-message");
 const taskMenu = document.getElementById("task-menu");
 const taskMenuMoveOutItem = taskMenu.querySelector('[data-action="move-out"]');
 // Step 11 (D9): shown only for a task that currently has a parent — see
@@ -438,6 +450,28 @@ function renderMainView() {
   // at their true depth) via render.js's flattenTree.
   const nonDeletedTasks = getTasks().filter((task) => !task.deleted);
 
+  // Step 19 (S19-0/S19-5): the search filter stage, inserted AHEAD of every
+  // filter this function already had — the ordering is load-bearing (S19-5)
+  // and must not be reshuffled. Built from `nonDeletedTasks` (both Inbox and
+  // main together, matching S19-6's "not Trash, not Overdue" scope) so a
+  // matched task's ancestor chain agrees with the exact tree the containers
+  // below render from; Inbox/main's strict partition means an ancestor chain
+  // never crosses between them anyway.
+  //
+  // A blank search box makes `matchingTaskIds` return every task's id
+  // (searchQuery.js: zero terms is a vacuous AND, true for everything), so
+  // `searchVisibleIds` degrades to "every task" and `searchContextIds`
+  // degrades to empty below — every filter this stage adds is a genuine
+  // no-op with the box empty, with no separate "is search active" branch
+  // needed anywhere in this function.
+  const searchQuery = searchInput.value;
+  const searchMatchIds = matchingTaskIds(searchQuery, nonDeletedTasks);
+  const searchVisibleIds = expandMatchesWithAncestors(nonDeletedTasks, searchMatchIds);
+  // S19-4: a task in `searchVisibleIds` that ISN'T itself a match is showing
+  // only as ancestor context for a matching descendant — render.js dims it
+  // via `.task-item--search-context`.
+  const searchContextIds = new Set([...searchVisibleIds].filter((id) => !searchMatchIds.has(id)));
+
   // Inbox vs. main is a strict partition: a subtask always inherits its
   // parent's `inInbox` at creation time (handleAddSubtaskClick below), so no
   // task's ancestry ever crosses between the two — each side is a complete,
@@ -445,7 +479,19 @@ function renderMainView() {
   const inboxTasks = nonDeletedTasks.filter((task) => task.inInbox);
   const mainTasks = nonDeletedTasks.filter((task) => !task.inInbox);
   const visibleIdsFor = (tasks) =>
-    new Set(tasks.filter((task) => showCompleted || !task.completed).map((task) => task.id));
+    new Set(
+      tasks
+        .filter((task) => showCompleted || !task.completed)
+        // Step 19 (S19-5): applied to the SAME candidate set the completed
+        // filter above just narrowed, exactly as the decision requires — a
+        // completed match hidden by "show completed" being off can never
+        // drag an otherwise-empty ancestor into view on its own, because the
+        // ancestor's own visibility here depends only on its OWN completed
+        // state, not on the hidden match that earned it a place in
+        // `searchVisibleIds`.
+        .filter((task) => searchVisibleIds.has(task.id))
+        .map((task) => task.id)
+    );
 
   // Step 12 (D2/D5/D8), ordering per issue 1's fix (SUPERSEDES step 12's D3
   // — see that superseding Decisions entry in PROGRESS.md, not the original
@@ -470,21 +516,43 @@ function renderMainView() {
   // does NOT gate this filter the way it gates the main list/Inbox — a
   // task's pinned flag being false is what removes it from Focus,
   // unconditionally, not a toggle.
-  const focusTasks = nonDeletedTasks.filter((task) => task.pinned && !task.completed);
+  // Step 19 (S19-6): Focus is in scope for search too — a pinned task that
+  // the search stage has hidden (not itself a match, and not an ancestor of
+  // one) drops out of Focus exactly as it would drop out of the main list.
+  const focusTasks = nonDeletedTasks.filter(
+    (task) => task.pinned && !task.completed && searchVisibleIds.has(task.id)
+  );
   focusSection.hidden = focusTasks.length === 0; // D8: no empty heading when nothing is pinned
+
+  const visibleInboxIds = visibleIdsFor(inboxTasks);
+  const visibleMainIds = visibleIdsFor(mainTasks);
 
   renderTasks(
     [
-      { element: inboxList, tasks: inboxTasks, visibleIds: visibleIdsFor(inboxTasks) },
-      { element: taskList, tasks: mainTasks, visibleIds: visibleIdsFor(mainTasks) },
+      { element: inboxList, tasks: inboxTasks, visibleIds: visibleInboxIds },
+      { element: taskList, tasks: mainTasks, visibleIds: visibleMainIds },
     ],
     { element: focusList, tasks: focusTasks },
     (id, field) => closeEdit(id, field),
     // Step 14: the tag settings cache, passed in rather than imported by
     // render.js (module boundary — see render.js's own comment). Every row's
     // colors are resolved from this plus the row's own title on every render.
-    getTagSettings()
+    getTagSettings(),
+    // Step 19: which of the rows just rendered are dimmed ancestor context
+    // rather than real matches (S19-4).
+    searchContextIds
   );
+
+  // S19-9: "No tasks match" replaces the (now genuinely empty) lists only
+  // when the box actually holds a query — a blank box producing zero visible
+  // tasks means "you have no tasks," a different and correctly silent state,
+  // which is why this checks the trimmed query rather than reusing
+  // `searchContextIds`/`searchVisibleIds` (both degrade to "everything," per
+  // this function's own opening comment, and would never on their own tell
+  // "search found nothing" apart from "search is off").
+  const isSearchActive = searchQuery.trim().length > 0;
+  const hasAnyVisibleTask = visibleInboxIds.size > 0 || visibleMainIds.size > 0 || focusTasks.length > 0;
+  searchEmptyMessage.hidden = !(isSearchActive && !hasAnyVisibleTask);
 }
 
 // Converts a task's `deletedAt` into a millisecond number safe to compare
@@ -2695,6 +2763,30 @@ showCompletedToggle.addEventListener("change", () => {
   views.main();
 });
 
+// 6b. Step 19 (Search — basic, S19-7): every keystroke re-renders through the
+// exact same pipeline "Show completed" above already uses — a pure filter
+// over an already-fetched, keyed-rendered list (renderTasks/entriesByTaskId)
+// is cheap enough per keystroke that a debounce would trade away
+// responsiveness for a performance problem that doesn't exist here.
+// Escape-to-clear (S19-8) is handled by the shared keydown listener at 5c
+// instead of here, alongside the title/note/due-date inputs' own Escape
+// handling.
+searchInput.addEventListener("input", () => {
+  views.main();
+});
+
+// S19-8: Escape clears the box and re-renders. A separate small listener
+// rather than a branch inside 5c's keydown handler above — that handler's
+// whole job is cancelling an in-progress PER-ROW edit (dataset.cancelling,
+// then a focusout commit/cancel), and the search box has no such lifecycle
+// at all (no `beginInteraction()`, no `openEdits` entry — it's a standing
+// toolbar control, not something that opens and closes per row).
+searchInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  searchInput.value = "";
+  views.main();
+});
+
 // 7. Login/logout
 loginBtn.addEventListener("click", logInWithGoogle);
 logoutBtn.addEventListener("click", logOut);
@@ -2718,6 +2810,11 @@ monitorAuthState(async (uid) => {
     // page must never see an "Undo" offering to rewrite ITS tasks with the
     // PREVIOUS account's title snapshot.
     tagUndoSnapshot = null;
+    // Step 19 (S19-8): search state is UI-only and never persisted — the
+    // same reasoning as tagUndoSnapshot above applies here too, a different
+    // account signing in on the same page must never land on a search box
+    // still holding the PREVIOUS account's query.
+    searchInput.value = "";
     closeTaskMenu(); // a menu open for one account's task means nothing once signed out
     cancelDrag(); // ditto for a drag in progress — see step 10's cancelDrag
     statusText.textContent = "Please sign in to access your task manager.";

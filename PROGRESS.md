@@ -1,8 +1,8 @@
 # Progress
 
-Last updated: 2026-08-18 — **Steps 1–18 implemented.** Step 19 (Search —
-basic) is next. No signed-in browser walkthrough has been reported back for
-any step yet — the click-path below is still the first thing to run.
+Last updated: 2026-08-18 — **Steps 1–19 implemented.** Step 20 (Search —
+advanced) is next. No signed-in browser walkthrough has been reported back
+for any step yet — the click-path below is still the first thing to run.
 
 ## Step table
 
@@ -26,8 +26,8 @@ any step yet — the click-path below is still the first thing to run.
 | 16 | Priority ordering | done |
 | 17 | Tag rename/delete | done |
 | 18 | Recurrence | done |
-| 19 | Search — basic | next |
-| 20 | Search — advanced | planned |
+| 19 | Search — basic | done |
+| 20 | Search — advanced | next |
 | 21 | Export / import | planned |
 
 ## Step 16 (Priority ordering) — done
@@ -105,21 +105,70 @@ stays `null` until the first advance ever stamps it. No history of past
 occurrences is kept anywhere (S18-7) — one task, one document, moving
 forward.
 
-## Resume here — step 19 (Search — basic)
+## Step 19 (Search — basic) — done
 
-**Exact next action:** implement step 19 per product-spec.md §6's Boolean
-search bullet (`AND`/`OR`/parentheses over tags, e.g.
-`#(private OR #pr) AND @office`) — read product-spec.md §6 in full before
-writing code. Decide and record (as new Decisions, not left implicit): where
-the search box lives in the UI, whether search is a filter over the existing
-main-list render or its own screen (Trash/Overdue/Settings' precedent), what
-the query grammar actually parses to (tags only, per the spec's own example,
-or also title text), and how an empty/malformed query is presented — this
-step is the first to parse a small user-authored grammar in this app, so the
-parser's error-handling story needs to be decided explicitly, not left as
-"whatever the regex happens to do." Step 20 (Search — advanced) is listed as
-a separate step in the ladder, so confirm from the spec what step 19 is
-scoped to include and exclude before starting.
+Implemented exactly per the orchestrator's locked decisions (S19-0–S19-10,
+see the Decisions log's step 19 entries below). Search is a **filter over
+the existing main-view render** (S19-0), never a new screen — a new
+`#search-input` in `#main-view`'s toolbar (index.html) feeds a new filter
+stage `app.js`'s `renderMainView` runs ahead of every filter it already had
+(the deleted filter, the Inbox/main partition, the `showCompleted` toggle,
+and Focus's pin filter — S19-5, unchanged and in that order). All of the
+actual matching logic lives in a new pure module, `public/searchQuery.js`
+(no DOM, no Firestore — same standing as `taskTree.js`/`tagColors.js`),
+specifically so step 20 can hang a boolean AND/OR/parentheses grammar over
+its `matchesTerm` leaf evaluator (S19-1) without touching render.js or
+app.js at all. `matchesTerm(task, term)` (S19-2) is a case-insensitive
+substring match over `title + "\n" + note` for a bare word, or a
+whole-token case-insensitive equality against `task.tags` for a `#foo`/
+`@foo` term (whole-token so `#pr` can never match `#private` — the same
+hazard step 17's `rewriteTagInTitle` guards). `matchingTaskIds` (S19-3)
+splits the box on whitespace and requires every term to match (implicit
+AND); a blank box splits to zero terms, and "every term in an empty list
+matches" is vacuously true for every task, which is what makes an empty
+search box degrade to "no filtering" with no separate active/inactive flag
+anywhere. `expandMatchesWithAncestors` (S19-4) adds every match's ancestor
+chain (via `taskTree.js`'s own `buildTree`/`ancestorChain`, not a second
+tree walk) to the visible set — a non-matching ancestor renders dimmed via
+a new `.task-item--search-context` modifier (the third `.task-item--*`
+class, alongside `--completed` and `--reparent-target`); a match's
+DESCENDANTS are deliberately NOT pulled in, the one asymmetry S19-4 records
+explicitly because it looks like a bug otherwise. Scope is main list +
+Inbox + Focus, never Trash or Overdue (S19-6) — all three share the one
+`nonDeletedTasks` search stage in `renderMainView`. There is no debounce
+(S19-7) — the filter is a pure function over an already-fetched, keyed-
+rendered list, and per-keystroke re-render (`#search-input`'s `input`
+listener) is exactly what that architecture is for. Search state is
+UI-only (S19-8): never sent to Firestore, cleared by Escape
+(`#search-input`'s own `keydown` listener, since the box has no per-row
+edit lifecycle to route through app.js's shared title/note/due-date Escape
+handler) and by sign-out (mirroring `tagUndoSnapshot`'s cleanup in the same
+`monitorAuthState` branch). A non-empty box whose query matches nothing
+shows `#search-empty-message` ("No tasks match", S19-9) in place of the
+lists — gated on the TRIMMED box being non-empty specifically so a
+genuinely task-free account doesn't show the same message with an empty
+box. No schema, `firestore.rules`, or `firestore.indexes.json` change
+(S19-10) — search stores nothing.
+
+## Resume here — step 20 (Search — advanced)
+
+**Exact next action:** implement step 20 per product-spec.md §6's Boolean
+search bullet (`AND`/`OR`/parentheses, mixed sigil distribution, e.g.
+`#(private OR #pr) AND @office`) plus its temporal terms (`today`,
+`this week`, `this month`, `age > 20d`/`age < 3m`, `overdue`) and the
+`weekStart` setting (Sunday/Monday, defaulting Sunday) — read
+product-spec.md §6 in full again before writing code; step 19's own S19-2
+comment records that its leaf-kind set (bare word, `#tag`, `@tag`) is
+**final for both steps** — step 20 adds no new leaf KINDS, only a grammar
+(AND/OR/parens) over the same `matchesTerm` plus new leaf kinds for the
+temporal terms that step 19 deliberately left out. `matchesTerm` in
+`public/searchQuery.js` is the one seam step 20 is designed to extend
+without touching `render.js`/`app.js`'s filter wiring (S19-1) — confirm
+that still holds before assuming a bigger rewrite is needed. `weekStart` is
+a new field on the settings document (`users/{uid}/meta/settings`,
+`settingsService.js`); check `isValidSettings()` in `firestore.rules`
+before writing it, the same "read the rule, don't assume" discipline step
+14/15 already established for that document.
 
 **No step has been confirmed in a signed-in browser yet.** Everything below marked
 "verified" was verified unsigned-in, by driving the real modules with synthetic
@@ -220,6 +269,25 @@ a bogus `does not provide an export named ...` error and cost real time once alr
     disappears and completing the task now behaves like any ordinary task
     again (cascades, disappears when done). Reload the page → the recurrence
     rule, the advanced due date, and the reset age all survive.
+16. Give a task a `#private` tag and a sub-task under it with a plain title.
+    Type `private` into the new search box (top of the main view) → both the
+    parent (a real match, via the tag text sitting in its own title) and the
+    still-visible sub-task's tree position are unaffected; now search
+    `#private` instead → same result (tag search finds it too). Search a
+    word that only a deeply-nested sub-task's title contains → that sub-task
+    shows, and every one of its ancestors up to the root shows too, dimmed
+    (they render slightly faded — that's `.task-item--search-context`); a
+    SIBLING of that sub-task, and the matching sub-task's own children, do
+    NOT appear. Search two words separated by a space → only tasks matching
+    BOTH show (typing a second word narrows the list further, never
+    broadens it). Search something no task contains → the lists disappear
+    and "No tasks match" appears in their place; clear the box (or press
+    Escape while it's focused) → the full list returns instantly. Tick
+    "Show completed" on and off while a search is active → the completed
+    toggle still works exactly as it does with an empty search box. Pin a
+    task, then search something it doesn't match → it drops out of Focus
+    too. Sign out with text still in the search box, sign back in → the box
+    is empty.
 
 **Files touched (steps 1–4):**
 - `public/taskService.js` — renamed from `todoService.js`; `addTask`, `fetchTasks`,
@@ -584,6 +652,47 @@ a bogus `does not provide an export named ...` error and cost real time once alr
   confirmed by reading `isValidTask()`, not assumed) — it has no `hasOnly`
   clause and mentions neither `recurrence` nor `occurrenceStart`, so both
   fields write exactly as freely as `dueDate` already does.
+
+**Files touched (step 19):**
+- `public/searchQuery.js` — **new module**, pure, no DOM and no Firestore,
+  same standing as `taskTree.js`/`tagColors.js`/`recurrence.js`.
+  `matchesTerm` (S19-2, the one leaf evaluator step 20 reuses verbatim);
+  `matchingTaskIds` (S19-3, whitespace-split/implicit-AND over a raw query
+  string and a task list); `expandMatchesWithAncestors` (S19-4, matches
+  union ancestor chains, built via `taskTree.js`'s own `buildTree`/
+  `ancestorChain` rather than a second tree walk).
+- `public/render.js` — `updateTaskElement` grows a fifth parameter,
+  `isSearchContext` (default `false` so `renderOverdue`'s call site needs no
+  change — search is out of scope there, S19-6), toggling the new
+  `.task-item--search-context` class alongside the existing `--completed`
+  one. `renderTasks` grows a fifth parameter, `searchContextIds` (default
+  `new Set()`), threaded into every `updateTaskElement` call in both the
+  tree-container loop and the Focus loop.
+- `public/app.js` — imports `matchingTaskIds`/`expandMatchesWithAncestors`
+  from `searchQuery.js`; `searchInput`/`searchEmptyMessage` DOM refs.
+  `renderMainView` gains the S19-5 filter stage (`searchMatchIds`/
+  `searchVisibleIds`/`searchContextIds`, computed from `nonDeletedTasks`
+  before the Inbox/main split) threaded into `visibleIdsFor` (AND'd with
+  the existing `showCompleted` filter, in that order — S19-5) and into the
+  Focus filter (S19-6); the empty-result check (S19-9) reuses the same
+  `visibleIdsFor` sets rather than recomputing them, and gates on the
+  TRIMMED search box being non-empty specifically so a genuinely task-free
+  account renders silently, same as before this step. Two new listeners:
+  `#search-input`'s `input` event re-renders on every keystroke (S19-7, no
+  debounce) and its own `keydown` handles Escape (S19-8) as a small,
+  separate listener rather than a branch inside the existing title/note/
+  due-date Escape-cancels-an-edit handler, since the search box has no
+  per-row open-edit lifecycle (no `beginInteraction()`, no `openEdits`
+  entry) for that handler's `dataset.cancelling`/focusout-commit protocol
+  to apply to. `monitorAuthState`'s sign-out branch clears `searchInput.value`
+  alongside `tagUndoSnapshot` (S19-8).
+- `public/index.html` — `#search-input` in `#main-view`'s toolbar (S19-0);
+  `#search-empty-message` (S19-9, hidden by default); `.task-item--search-
+  context` CSS (S19-4, dims the whole row via `opacity`, unlike
+  `--completed` which only dims the label).
+- No change to `firestore.rules`, `firestore.indexes.json`, or any
+  Firestore-writing module (S19-10) — search state lives only in
+  `#search-input.value` and is never read by any write path.
 
 **Verified (actually exercised in a real browser at localhost:5050, unsigned-in, by
 driving the real modules directly):**
@@ -1534,6 +1643,71 @@ driving the real modules directly):**
     them verbatim against the real store/recurrence.js/render.js functions
     (see the concrete values above), the same substitute this project has
     used for every write path since step 11.
+- **Step 19 (Search — basic), verified live in the real browser tab
+  (`localhost:5050`, unsigned-in) against the real, unmodified
+  `searchQuery.js`/`taskTree.js`/`render.js`/`app.js` — synthetic tasks
+  loaded straight into `store.js`'s real `setTasks`, filtered by dispatching
+  REAL `input`/`change`/`keydown` events on the page's actual
+  `#search-input`/`#show-completed-toggle` elements (app.js's own listeners,
+  not a reimplementation), and read back from the real rendered
+  `#task-list`/`#focus-list` DOM:**
+  - **Full reachability chain, proven end to end:** a synthetic 3-level
+    chain `P(root) > B(completed, tags:["#private"]) > C(leaf)` plus an
+    unrelated sibling `D` and an unrelated root match `Q`. Typing `"urgent"`
+    into the real `#search-input` (a genuine `input` event, `showCompleted`
+    off) rendered exactly `[P, Q]` — `P` with class
+    `"task-item task-item--search-context"` (dimmed ancestor context, since
+    its only matching descendant `B` is hidden by `showCompleted`), `Q`
+    with plain `"task-item"` (a real, undimmed match); `B`, `C`, and `D` did
+    not render at all.
+  - **S19-5's ordering, proven concretely (not just reasoned about):**
+    flipping `showCompleted` on (a real `change` event) re-rendered as
+    `[P (dimmed), B (a real match, undimmed, plus `--completed`), Q]` — `B`
+    reappearing the instant its own completed-filter obstacle is removed,
+    with no change to the search terms, confirms the completed filter is
+    applied to the search-narrowed candidate set (AND), not the other way
+    around.
+  - **S19-4's asymmetry (ancestors pulled in, descendants NOT), proven at
+    two tree depths:** searching a term only `C` (the grandchild) matched
+    rendered `[P (dimmed, depth 0), B (dimmed, depth 1), C (undimmed match,
+    depth 2)]` — both ancestors pulled in and correctly dimmed, depths
+    intact — while in the first scenario above, searching a term `B`
+    matched never pulled its own child `C` in at all.
+  - **S19-2's whole-token, case-insensitive tag matching, proven against
+    the real `matchingTaskIds`:** `B` carries the literal tag `"#private"`.
+    Query `"#PRIVATE"` (different case, whole token) matched `B`; query
+    `"#priv"` (a genuine prefix of the same tag) matched nothing at all —
+    confirming the prefix hazard S19-2 calls out (`#pr` vs. `#private`) is
+    actually closed, not just asserted in a comment.
+  - **S19-3's implicit AND, proven against the real `matchingTaskIds`:**
+    query `"urgent #private"` matched only `B` (title contains "urgent" AND
+    tags contain "#private"; `Q` has "urgent" in its title but no
+    `#private` tag, so it correctly dropped out the moment the second term
+    was added).
+  - **S19-6 (Focus is in scope), proven live:** pinning `Q` showed it in
+    `#focus-list` with an empty search box; searching a term matching
+    nothing (and no ancestor of anything) hid it from Focus too, with
+    `#focus-section` re-hiding itself (`hidden: true`) exactly as it does
+    when nothing is pinned at all.
+  - **S19-9's empty-state message, proven for both directions of the
+    box-empty/results-empty distinction:** a query matching nothing showed
+    `#search-empty-message` (`hidden: false`) with zero rows in both
+    `#task-list` and `#inbox-list`; clearing the store to genuinely zero
+    tasks with an EMPTY search box left the message correctly `hidden:
+    true` — confirming "no tasks at all" and "search found nothing" render
+    as two different, correctly distinguished states.
+  - **S19-8's Escape-to-clear, proven live:** with the empty-result state
+    above still showing, focusing `#search-input` and dispatching a real
+    `Escape` `KeyboardEvent` cleared `.value` to `""` and immediately
+    restored the full 5-task list (all of `P`/`B`/`C`/`D`/`Q`) in the same
+    render pass — no separate reload or manual re-trigger needed.
+  - **Not executable signed-out:** no Firestore write path exists in this
+    step at all (S19-10) — there was nothing here that COULD be blocked by
+    the `if (!userId) return` guards every mutation path already has, and
+    none was invoked; every check above exercised only in-memory state
+    (`store.js`'s `setTasks`/`getTasks`) and the real DOM render, with zero
+    calls to `saveTask`/`softDeleteTask`/`purgeTask`/`saveSettings` and no
+    fake signed-in uid set at any point.
 
 ## Decisions
 
@@ -2780,6 +2954,82 @@ driving the real modules directly):**
   fields' read-time defaults (S18-1), and `isValidTask()` (re-confirmed by
   reading, not re-derived from step 13's note about `dueDate`) constrains
   neither new field.
+- **step 19 (S19-0) — search is a FILTER on the main view, not a new
+  screen.** Reuses `renderMainView`'s single render path (Inbox, main list,
+  Focus, `showCompleted`, pinning, drag, quadrant sort) rather than
+  reimplementing all of it behind a fourth `currentView` panel the way
+  Trash/Overdue/Settings each did for genuinely different content.
+- **step 19 (S19-1) — the leaf evaluator (`matchesTerm`, `searchQuery.js`)
+  is a standalone, pure, exported function, and step 20 reuses it
+  VERBATIM.** This is the one decision that makes step 20 an additive
+  change (a grammar layered on top) instead of a rewrite — nothing about
+  matching a single term may ever move into `render.js`/`app.js`.
+- **step 19 (S19-2, final for both steps 19 and 20) — term semantics.** A
+  bare word is a case-insensitive substring over `title + "\n" + note`
+  (covers spec:166-168's "tags in the title, the rest of the title, and the
+  note" in one pass — `task.tags` is NOT separately consulted for a bare
+  word, since a tag token already sits inside the title text). A
+  `#foo`/`@foo` term is WHOLE-TOKEN, case-insensitive equality against
+  `task.tags` — whole-token so `#pr` can never match `#private` (spec's own
+  example treats them as distinct tags); case-insensitive only for search,
+  never for tag identity elsewhere (a settings-screen `#Work` and `#work`
+  stay two separate entries). Step 20 adds NO new leaf kinds to this list —
+  only new grammar (AND/OR/parens) over it, plus wholly separate temporal
+  leaf kinds (`today`, `age > 20d`, `overdue`, ...) step 19 never touches.
+- **step 19 (S19-3) — whitespace is an implicit AND, decided now rather
+  than deferred to step 20.** `foo bar` requires BOTH terms to match, never
+  a literal substring search for `"foo bar"` — chosen now so step 20's
+  grammar is purely additive and no user-visible behavior flips between the
+  two steps. A blank query has zero terms, and "every term in an empty list
+  matches" is vacuously true for every task — this is what makes an empty
+  search box mean "no filtering" with no separate on/off flag anywhere.
+  Quoted-phrase search is NOT implemented in either step; record it absent
+  so a later session does not assume it exists.
+- **step 19 (S19-4) — ancestor context, with a deliberate asymmetry.** A
+  visible-but-non-matching task is shown as context for a matching
+  DESCENDANT (spec:169-172, "the parent is still shown") and dimmed via a
+  new `.task-item--search-context` modifier. Descendants of a match are NOT
+  pulled in — the spec grants context upward only; pulling a whole subtree
+  in under one matching ancestor would defeat the filter entirely. Record
+  this asymmetry explicitly: it reads as a bug to anyone who hasn't read
+  this line.
+- **step 19 (S19-5, load-bearing — do not reorder) — filter stage
+  ordering.** `search-match → ancestor expansion → the existing filters
+  (deleted / inbox split / showCompleted / pin), unchanged`. The
+  `showCompleted` filter applies to the search-narrowed candidate set
+  (AND), not the reverse — this is what makes a hidden completed match
+  correctly fail to drag an otherwise-empty ancestor into view on its own
+  (proven concretely in the Verified section above by toggling
+  `showCompleted` with the search term held fixed).
+- **step 19 (S19-6) — scope is main list + Inbox + Focus; Trash and
+  Overdue are NOT searched.** All three in-scope surfaces render through
+  `renderMainView`'s one `nonDeletedTasks` search stage; Trash and Overdue
+  are separate screens with their own render functions, and `overdue`
+  becomes an ordinary query TERM in step 20 (spec:182-184) rather than a
+  searchable screen.
+- **step 19 (S19-7) — no debounce.** The filter is a pure function over an
+  already-fetched, keyed-rendered list (`entriesByTaskId`) — exactly the
+  design that makes per-keystroke re-render safe and cheap. Recorded so a
+  later session doesn't "fix" a latency problem that doesn't exist here by
+  adding one.
+- **step 19 (S19-8) — search state is UI-only, never persisted.** No new
+  task field, no new settings field, nothing sent to Firestore. Escape
+  clears the box (a dedicated `#search-input` `keydown` listener, since the
+  box has no per-row open-edit lifecycle to route through the shared
+  title/note/due-date Escape handler); sign-out clears it too, mirroring
+  `tagUndoSnapshot`'s cleanup in the same `monitorAuthState` branch (step
+  17's precedent) so a second account signing in on the same page never
+  sees the first account's query.
+- **step 19 (S19-9) — an active, zero-result search gets an explicit
+  message, distinct from "you have no tasks."** `#search-empty-message`
+  ("No tasks match") is gated on the TRIMMED search box being non-empty,
+  specifically so a genuinely task-free account with an empty box still
+  renders silently — an empty list is otherwise indistinguishable from a
+  data-loss bug at a glance.
+- **step 19 (S19-10, not really a decision) — no change to
+  `firestore.rules`, `firestore.indexes.json`, or any write path.** Search
+  stores nothing; every field it reads (`title`, `note`, `tags`) already
+  existed and was already validated by prior steps.
 
 ## Open items (not steps)
 

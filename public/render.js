@@ -94,6 +94,12 @@ import {
   computeQuadrantRankMap,
   QUADRANT_OPTIONS,
 } from "./tagColors.js";
+// Step 18 (Recurrence): the one place a recurrence rule is turned into
+// display text — shared with app.js's context-menu label/prompt default, so
+// this row badge and that label can never disagree on wording. recurrence.js
+// itself has no imports (see its file header on why NOT importing
+// localMidnight back from here matters), so this edge is one-directional.
+import { describeRecurrence } from "./recurrence.js";
 
 const entriesByTaskId = new Map();
 const focusEntriesByTaskId = new Map();
@@ -206,7 +212,12 @@ function flattenTree(allTasks, visibleIds, rankMap = new Map()) {
 // that genuinely has no due date, silently hiding the bad data. A present
 // but unparseable value is logged so it's discoverable; a genuinely
 // absent/null `dueDate` is the normal case and must stay silent.
-function timestampToDate(value) {
+//
+// Exported as of step 18 (Recurrence): recurrence.js's advance arithmetic and
+// app.js's recurrence handlers both need this same unwrap for `dueDate`, and
+// duplicating it would be a second place the Timestamp-vs-Date distinction
+// could drift.
+export function timestampToDate(value) {
   if (!value) return null;
   if (typeof value.toDate === "function") return value.toDate();
   if (value instanceof Date) return value;
@@ -285,6 +296,13 @@ export function isOverdueTask(task, now = new Date()) {
 // less than 24 hours ago." `createdAt` can be null on a doc whose
 // serverTimestamp() hasn't resolved in the local snapshot yet — that must
 // render as a plain, non-alarming string, never "NaN days old".
+//
+// Step 18 (S18-3): this function itself is unchanged — its caller
+// (updateTaskElement below) now passes `task.occurrenceStart ?? task.createdAt`
+// instead of `task.createdAt` alone, so age resets each time a recurring
+// task's due date advances. The `?? createdAt` fallback is what lets every
+// pre-existing, never-recurring task keep byte-identical age with no
+// backfill: `occurrenceStart` is null until the first advance ever stamps it.
 export function computeAgeLabel(createdAt, now = new Date()) {
   const createdDate = timestampToDate(createdAt);
   if (!createdDate) return "age unknown";
@@ -603,6 +621,17 @@ function createTaskElement(taskId) {
   quadrantBadge.style.display = "none";
   meta.appendChild(quadrantBadge);
 
+  // Step 18 (Recurrence): a plain, always-recomputed badge naming the rule
+  // (e.g. "Daily", "Monthly (day 31)") — same "recomputed fresh on every
+  // render, hidden entirely rather than emptied-but-visible when absent"
+  // shape as quadrantBadge just above. There is no edit state to guard here
+  // either: the rule itself is only ever changed through the context menu's
+  // prompt flow (app.js), never inline on this row.
+  const recurrenceBadge = document.createElement("span");
+  recurrenceBadge.className = "task-item__recurrence-badge";
+  recurrenceBadge.style.display = "none";
+  meta.appendChild(recurrenceBadge);
+
   // Every per-row action button lives in one wrapper (see index.html's
   // .task-item__actions) so the group is pushed right as a whole regardless
   // of which individual buttons are visible for this task.
@@ -654,6 +683,7 @@ function createTaskElement(taskId) {
     dueInput,
     ageDisplay,
     quadrantBadge,
+    recurrenceBadge,
     moveOutButton,
     addSubtaskButton,
     deleteButton,
@@ -740,7 +770,11 @@ function updateTaskElement(entry, task, depth, tagSettings) {
     entry.dueInput.value = formatDateForInput(task.dueDate);
   }
   entry.dueDisplay.classList.toggle("task-item__due-display--overdue", overdue);
-  entry.ageDisplay.textContent = computeAgeLabel(task.createdAt);
+  // S18-3: age reads `occurrenceStart ?? createdAt` — the fallback is what
+  // keeps every task that has never recurred byte-identical (occurrenceStart
+  // is null until the first advance ever stamps it), so this is the only
+  // line step 18 changes here.
+  entry.ageDisplay.textContent = computeAgeLabel(task.occurrenceStart ?? task.createdAt);
 
   // Step 15 (Q6): resolved fresh from the title on every render, exactly like
   // resolveTagColor above and for the identical reason (D12) — never from the
@@ -757,6 +791,17 @@ function updateTaskElement(entry, task, depth, tagSettings) {
     entry.quadrantBadge.textContent = "";
     entry.quadrantBadge.removeAttribute("title");
     entry.quadrantBadge.style.display = "none";
+  }
+
+  // Step 18: a recurring task's badge, recomputed fresh from `task.recurrence`
+  // on every render — same "hidden entirely rather than emptied-but-visible
+  // when absent" rule as the quadrant badge just above.
+  if (task.recurrence) {
+    entry.recurrenceBadge.textContent = `🔁 ${describeRecurrence(task.recurrence)}`;
+    entry.recurrenceBadge.style.display = "";
+  } else {
+    entry.recurrenceBadge.textContent = "";
+    entry.recurrenceBadge.style.display = "none";
   }
 }
 

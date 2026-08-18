@@ -163,6 +163,18 @@ function normalizeTask(task) {
     // (Trash) is what restores the exact subtree that went down together by
     // matching this id.
     deletedByCascadeFrom: task.deletedByCascadeFrom ?? null,
+    // Step 18 (Recurrence) locks this shape, S18-1: `recurrence` is
+    // `{ kind, ... } | null` (see recurrence.js's file header for the four
+    // per-kind shapes); `null` means "does not repeat" and is also the ONLY
+    // way a recurrence ever stops (S18-0 — deleting the task is the other,
+    // but that's not a field value). `occurrenceStart` (S18-3) is a
+    // Timestamp | null, re-stamped every time the checkbox handler advances
+    // a recurring task's due date; `null` on every task that has never
+    // advanced, which render.js's age calculation falls back to `createdAt`
+    // for — so every pre-step-18 document reads byte-identical age with no
+    // backfill needed.
+    recurrence: task.recurrence ?? null,
+    occurrenceStart: task.occurrenceStart ?? null,
   };
 }
 

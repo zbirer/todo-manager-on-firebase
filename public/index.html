@@ -194,6 +194,17 @@
       font-weight: 600;
       background-color: rgba(255, 255, 255, 0.25);
     }
+    /* Step 18 (Recurrence): same compact-pill shape as the quadrant badge
+       just above, in the same meta row; hidden entirely (display: none, set
+       in render.js) for a non-recurring task rather than shown empty. */
+    .task-item__recurrence-badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      background-color: rgba(255, 255, 255, 0.25);
+    }
     /* All per-row action buttons live in one wrapper so pushing the whole
        group to the right (margin-left: auto) never depends on which
        individual buttons happen to be visible — render.js toggles buttons
@@ -679,6 +690,13 @@
          write with no editor step, shown only when task.dueDate is set. -->
     <button type="button" class="task-menu__item" data-action="edit-due-date">Set due date</button>
     <button type="button" class="task-menu__item" data-action="clear-due-date">Clear due date</button>
+    <!-- Step 18 (Recurrence, S18-0/D10 precedent): a single prompt-based
+         editor (app.js's handleSetRecurrenceClick), label toggled per
+         whether a rule is already set. There is deliberately NO separate
+         "Stop recurrence" item — product-spec.md §5:145-148 rules that out
+         explicitly (deleting the task is what ends a cycle); the editor's
+         own "none" answer is how a misconfigured rule gets corrected. -->
+    <button type="button" class="task-menu__item" data-action="set-recurrence">Set recurrence</button>
     <button type="button" class="task-menu__item task-menu__item--danger" data-action="delete">Delete</button>
   </div>
 

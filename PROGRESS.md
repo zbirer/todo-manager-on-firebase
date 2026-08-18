@@ -1,8 +1,8 @@
 # Progress
 
-Last updated: 2026-08-18 — **Steps 1–17 implemented.** Step 18 (Recurrence)
-is next. No signed-in browser walkthrough has been reported back for any step
-yet — the click-path below is still the first thing to run.
+Last updated: 2026-08-18 — **Steps 1–18 implemented.** Step 19 (Search —
+basic) is next. No signed-in browser walkthrough has been reported back for
+any step yet — the click-path below is still the first thing to run.
 
 ## Step table
 
@@ -25,8 +25,8 @@ yet — the click-path below is still the first thing to run.
 | 15 | Quadrant mapping | done |
 | 16 | Priority ordering | done |
 | 17 | Tag rename/delete | done |
-| 18 | Recurrence | next |
-| 19 | Search — basic | planned |
+| 18 | Recurrence | done |
+| 19 | Search — basic | next |
 | 20 | Search — advanced | planned |
 | 21 | Export / import | planned |
 
@@ -63,23 +63,63 @@ module-level, in-memory, non-persisted snapshot (`tagUndoSnapshot`, app.js)
 that replays every task's previous title verbatim and restores the whole
 prior settings document — never a reverse rename.
 
-## Resume here — step 18 (Recurrence)
+## Step 18 (Recurrence) — done
 
-**Exact next action:** implement step 18 per product-spec.md §5's recurrence
-bullet. This is the first step to give a task a schedule that regenerates it
-after completion — read product-spec.md §5 in full before writing code, and
-re-check step 13 (D1)'s note that "no partial groundwork" for recurrence was
-laid during Dates. Decide and record (as new Decisions, not left implicit):
-what fields a recurrence rule needs on a task document, whether completing a
-recurring task writes a NEW task or resets the same document, how a
-recurring task's `dueDate` advances, and how this interacts with the 7-level
-hierarchy / cascade-complete / cascade-delete machinery already in place (a
-recurring task with sub-tasks is not addressed by the spec's own wording — do
-not guess silently, record the reading taken). Also confirm whether
-`firestore.rules`/`firestore.indexes.json` need a new field validated —
-unlike steps 14–17, this one plausibly does add a genuinely new task field,
-so don't assume "no rules change" without actually reading `isValidTask()`
-first, the same way every prior step's "not really a decision" entries did.
+Implemented exactly per the orchestrator's locked decisions (S18-0–S18-7, see
+the Decisions log's step 18 entries below). A task's `recurrence` (S18-1:
+`{ kind, ... } | null`, one of `daily`/`weekdays`/`weekly`/`monthly`) is set
+via the context menu's "Set recurrence"/"Change recurrence" item
+(`handleSetRecurrenceClick`, app.js) — a `prompt()`-based flow, matching this
+codebase's existing pattern for a multi-field edit with no dedicated inline
+UI (step 17's tag rename is the precedent), rather than a new inline
+display/input pair. There is deliberately **no "Stop Recurrence" menu
+action** (S18-0 — product-spec.md §5:145-148 rules it out: deleting the task
+is what ends a cycle); the editor's own "none" answer is the only way to
+clear a rule short of deletion. Setting a recurrence on a task with no due
+date defaults it to today (S18-5) so weekly/monthly have a real date to
+derive their anchor from (`deriveAnchorFromDate`, recurrence.js) and
+daily/weekdays have something to advance from.
+
+Completing a recurring task (the checkbox `change` listener, app.js) branches
+on `task.recurrence` **before** the plain `completed: true` write and before
+the cascade-complete subtree is even computed (S18-6): it advances `dueDate`
+by stepping the rule forward from the current due date **repeatedly until
+the result is strictly after today** (`advanceRecurrence`, recurrence.js,
+S18-2 — not one step from the old due date, so a task completed several
+days late lands on the next *future* occurrence, never staying overdue),
+restamps `occurrenceStart` to the moment of the advance (today), and leaves
+`completed: false` and `closedByCascadeFrom: null`. Because this branch
+`return`s before `buildTree`/`descendantIds` are ever called, a recurring
+parent's children are never looked up, let alone touched — verified live
+against the real `taskTree.js` (`descendantIds` on a synthetic P1>C1>C2 CAN
+find `["C1","C2"]` if asked, proving the walk isn't broken, but the two
+children's `completed`/`closedByCascadeFrom` are provably unwritten by this
+path). Monthly re-anchors from the **stored** `anchorDayOfMonth` on every
+advance, never from the current (possibly already-clamped) due date's own
+day-of-month (S18-4) — this is what makes Jan 31 → Feb 28/29 → Mar 31 work
+instead of degrading permanently to the 28th. Age (`computeAgeLabel`'s
+caller in render.js) now reads `task.occurrenceStart ?? task.createdAt`
+(S18-3) — the `?? createdAt` fallback is what keeps every task that has
+never recurred byte-identical with no backfill, since `occurrenceStart`
+stays `null` until the first advance ever stamps it. No history of past
+occurrences is kept anywhere (S18-7) — one task, one document, moving
+forward.
+
+## Resume here — step 19 (Search — basic)
+
+**Exact next action:** implement step 19 per product-spec.md §6's Boolean
+search bullet (`AND`/`OR`/parentheses over tags, e.g.
+`#(private OR #pr) AND @office`) — read product-spec.md §6 in full before
+writing code. Decide and record (as new Decisions, not left implicit): where
+the search box lives in the UI, whether search is a filter over the existing
+main-list render or its own screen (Trash/Overdue/Settings' precedent), what
+the query grammar actually parses to (tags only, per the spec's own example,
+or also title text), and how an empty/malformed query is presented — this
+step is the first to parse a small user-authored grammar in this app, so the
+parser's error-handling story needs to be decided explicitly, not left as
+"whatever the regex happens to do." Step 20 (Search — advanced) is listed as
+a separate step in the ladder, so confirm from the spec what step 19 is
+scoped to include and exclude before starting.
 
 **No step has been confirmed in a signed-in browser yet.** Everything below marked
 "verified" was verified unsigned-in, by driving the real modules with synthetic
@@ -168,6 +208,18 @@ a bogus `does not provide an export named ...` error and cost real time once alr
     carrying a tag that still has colors → that tag is STILL listed on the
     settings screen (so its color is not silently orphaned). Reload the page →
     every color assignment survives.
+15. Give a task a due date, then right-click it → "Set recurrence" → type
+    `daily` → the row gains a "🔁 Daily" badge next to its age. Tick its
+    checkbox complete → it does NOT disappear (a recurring task never shows
+    as completed) and its due date and age both advance to reflect the next
+    occurrence — the checkbox itself un-checks on the refresh. Give a task a
+    recurrence with a couple of open sub-tasks, tick the PARENT complete →
+    the parent advances exactly as above and the sub-tasks stay open and
+    untouched (no cascade). Right-click the recurring task again → the item
+    now reads "Change recurrence"; typing `none` clears it — the badge
+    disappears and completing the task now behaves like any ordinary task
+    again (cascades, disappears when done). Reload the page → the recurrence
+    rule, the advanced due date, and the reset age all survive.
 
 **Files touched (steps 1–4):**
 - `public/taskService.js` — renamed from `todoService.js`; `addTask`, `fetchTasks`,
@@ -465,6 +517,73 @@ a bogus `does not provide an export named ...` error and cost real time once alr
   `saveSettings`, no different in shape from every other mutation in this
   app, and the settings entry's shape is unchanged (rename/delete only ever
   move or remove a whole entry, never touch its internal fields).
+
+**Files touched (step 18):**
+- `public/recurrence.js` — **new module**, pure, no DOM and no Firestore, and
+  deliberately **no imports at all** (same standing as `taskTree.js`) even
+  though its arithmetic needs a local-midnight construction identical to
+  render.js's own `localMidnight` — importing that back would create a
+  render.js ↔ recurrence.js cycle (render.js's row badge wants this file's
+  `describeRecurrence`), so `localMidnightOf` here is a deliberate one-line
+  duplicate instead. `advanceRecurrence` (S18-2, "step forward until strictly
+  after today," never one step from the old due date) is the one export
+  every other piece of this step's logic sits behind; `stepOnce`/`addDays`/
+  `nextWeekday`/`addMonthsClamped` are its private per-kind mechanics.
+  `addMonthsClamped` re-derives the target day from the passed-in
+  `anchorDayOfMonth` on every call, never from the date being advanced (S18-4
+  — Jan 31 → Feb 28/29 → Mar 31, not a permanent degrade to the 28th).
+  `deriveAnchorFromDate` (S18-5) turns a concrete anchor date into a weekly
+  rule's `anchorDay` or a monthly rule's `anchorDayOfMonth`, called once at
+  setup time, never re-derived on a later advance. `describeRecurrence` is
+  the one wording function shared by render.js's row badge and app.js's
+  menu label/prompt default. `parseWeekdaysInput` validates a comma-separated
+  prompt answer into a de-duplicated, sorted `0..6` array or `null`.
+- `public/taskService.js` — `normalizeTask` grows the S18-1 defaults:
+  `recurrence: task.recurrence ?? null`, `occurrenceStart: task.occurrenceStart
+  ?? null`. `addTask` is untouched — a brand-new task never starts recurring,
+  so there is nothing to write at creation (same reasoning as step 14's D3
+  not writing a then-dead `colors` field).
+- `public/render.js` — `timestampToDate` is now **exported** (previously
+  private) so recurrence.js's callers (app.js) and this file's own badge
+  logic share one Timestamp-vs-Date unwrap. `computeAgeLabel`'s one call site
+  in `updateTaskElement` now passes `task.occurrenceStart ?? task.createdAt`
+  instead of `task.createdAt` alone (S18-3) — `computeAgeLabel` itself is
+  unchanged. `createTaskElement`/`updateTaskElement` grow a
+  `.task-item__recurrence-badge` span (same "hidden entirely rather than
+  emptied-but-visible when absent" rule as the step 15 quadrant badge),
+  showing `describeRecurrence(task.recurrence)` (imported from
+  recurrence.js) whenever a rule is set. This is the one new edge into
+  recurrence.js from this file; recurrence.js itself has no edge back.
+- `public/app.js` — imports `advanceRecurrence`/`deriveAnchorFromDate`/
+  `describeRecurrence`/`parseWeekdaysInput`/`RECURRENCE_KINDS` from
+  recurrence.js, and `timestampToDate`/`localMidnight` from render.js (newly
+  needed here). `taskMenuSetRecurrenceItem` (mirrors the due-date items'
+  ref pattern); `openTaskMenuForTask` toggles its label per
+  `task.recurrence` (D10 precedent — "Set recurrence"/"Change recurrence"),
+  always shown (never hidden — even a task with no due date can open the
+  editor, which defaults one). `handleSetRecurrenceClick` (S18-0's "none" is
+  the only stop, prompt-based like step 17's tag rename): prompts for a kind,
+  a second prompt for `weekdays`' day set, then one `enqueueMutation`-wrapped
+  `saveTask` that re-reads the task at run time, defaults a missing due date
+  to today (S18-5) before deriving weekly/monthly's anchor, and writes the
+  rule. The checkbox `change` listener's completing branch gained a
+  `if (task.recurrence)` branch (S18-6, locked) inserted **before** the
+  cascade's `buildTree`/`descendantIds` calls and the plain
+  `completed: true` write — it advances `dueDate` via `advanceRecurrence`,
+  restamps `occurrenceStart` to the moment of the advance (not to the new,
+  possibly-far-future due date), and writes `completed: false`,
+  `closedByCascadeFrom: null`, then returns — the cascade code is
+  syntactically unreachable from this branch, not merely skipped by a
+  runtime check.
+- `public/index.html` — the context menu's "Set recurrence" button
+  (`data-action="set-recurrence"`, placed before Delete, after the due-date
+  items — S18-0's comment on why there is no separate "Stop recurrence"
+  item); `.task-item__recurrence-badge` CSS (identical pill shape to
+  `.task-item__quadrant-badge`, in the same meta row).
+- No change to `firestore.rules` or `firestore.indexes.json` (S18-1,
+  confirmed by reading `isValidTask()`, not assumed) — it has no `hasOnly`
+  clause and mentions neither `recurrence` nor `occurrenceStart`, so both
+  fields write exactly as freely as `dueDate` already does.
 
 **Verified (actually exercised in a real browser at localhost:5050, unsigned-in, by
 driving the real modules directly):**
@@ -1321,6 +1440,100 @@ driving the real modules directly):**
     `confirm()` dialogs, and the actual undo replay were never reached,
     because `enqueueMutation`'s/the handlers' own `if (!userId) return`
     guards fire first and this session never set a fake signed-in uid.
+- **Step 18 (Recurrence), the advance arithmetic verified directly against
+  the real, unmodified `recurrence.js` module (both via `node --check`-clean
+  Node imports of the actual file AND inside the real browser tab, same
+  file, same functions, not a reimplementation) with concrete computed
+  dates, and the checkbox/menu wiring verified unsigned-in against the real
+  DOM and delegated listeners:**
+  - **S18-2 (advance past today, not one step), proven concretely:** a daily
+    task due 2026-08-18, completed the same day, advances to **2026-08-19**.
+    The high-risk case — a daily task due 2026-08-13, completed
+    2026-08-18 (5 days late) — also advances to **2026-08-19**, not
+    2026-08-14: the loop keeps stepping until strictly past today, so a
+    stale task lands tomorrow instead of staying overdue.
+  - **S18-4 (monthly re-anchors from the stored day, not the clamped one),
+    proven concretely:** anchored on Jan 31 2026, advancing twice produced
+    **2026-02-28** then **2026-03-31** — March re-derived 31 from the
+    anchor, not from February's clamped 28. The leap-year case (anchored on
+    Jan 31 2028, a leap year) advanced to **2028-02-29** exactly.
+  - **Weekdays completed on a day not in the selected set, proven
+    concretely:** rule `{days:[1,3,5]}` (Mon/Wed/Fri), due Monday
+    2026-08-17, completed Tuesday 2026-08-18 (Tuesday isn't in the set) →
+    advanced to **Wednesday 2026-08-19**, the next day actually in the set,
+    not the day after the completion date generically.
+  - **Weekly preserves its anchored weekday, proven concretely:** due
+    Wednesday 2026-08-12 → next occurrence **2026-08-19**, exactly +7 days,
+    same weekday (dow 3 both ends).
+  - **DST boundary (this machine's real zone, Asia/Jerusalem, which
+    genuinely observes DST — re-checked, not assumed), proven concretely:**
+    Israel's 2026 spring-forward lands between March 26 and 27 (UTC offset
+    confirmed to flip from +0200 to +0300 across that exact date via
+    `Date#toString`). A daily task due 2026-03-26, completed the same day,
+    advanced to **2026-03-27T00:00 local** — local midnight exactly, zero
+    hour drift across the gap. A second check with `TZ=America/New_York`
+    (a negative-UTC-offset zone, the one the D2-era UTC-parsing bug from
+    step 13 actually manifests in) confirmed the same zero-drift result
+    across both that zone's spring-forward (2026-03-08) and fall-back
+    (2026-11-01) boundaries, and a weekly rule spanning the spring-forward
+    boundary preserved its weekday exactly.
+  - **S18-5 (missing due date defaults to today), proven concretely:**
+    setting a `monthly` recurrence on a task with `dueDate: null` (today
+    being 2026-08-18) produced `anchorDayOfMonth: 18` and wrote
+    `dueDate: 2026-08-18` — the anchor and the due date both derived from
+    "today," never left null.
+  - **Reachability trace, driven for real in the browser DOM:** synthetic
+    tasks loaded into the real `store.js` were rendered into the page's
+    actual `#task-list` via the real `renderTasks` (render.js). A REAL
+    `contextmenu` `MouseEvent` dispatched on a recurring task's rendered row
+    opened the real `#task-menu` (`openTaskMenuForTask`, app.js:342) with its
+    `[data-action="set-recurrence"]` button reading **"Change recurrence"**;
+    the identical dispatch on a non-recurring row's row read **"Set
+    recurrence"** — the D10-precedent label toggle is genuinely wired to
+    `task.recurrence`, not hardcoded. A REAL `click` on that button, with
+    `window.prompt` instrumented, reached the real delegated listener
+    (`taskMenu`'s click listener, app.js:2631 → `action === "set-recurrence"`,
+    app.js:2648 → `handleSetRecurrenceClick`, app.js:1678) and closed the
+    menu, but **never called `prompt()`** — the unsigned-in `if (!userId)
+    return` guard fires first, the same "reaches the guard, guard fires
+    first" shape every write path has shown unsigned-in since step 11.
+  - **S18-6 (no cascade on a recurring completion), proven both structurally
+    and behaviorally:** reading app.js's actual source confirms the
+    `if (task.recurrence)` branch (app.js:787) sits — and `return`s
+    (app.js:807) — entirely above the `buildTree`/`descendantIds` calls
+    (app.js:815-816) the plain completing path uses, so the cascade code is
+    syntactically unreachable from a recurring completion, not merely
+    skipped by a runtime condition. Behaviorally: a synthetic parent P1
+    (`weekly`, due today, two open descendants C1 and C2) had this branch's
+    exact write body replicated against it — P1's write produced an
+    advanced `dueDate` (+7 days), a restamped `occurrenceStart` (today), and
+    `completed: false` — while C1 and C2, read back from the SAME store
+    afterward, showed byte-identical `completed: false` /
+    `closedByCascadeFrom: null` to their pre-completion state. Confirmed the
+    walk itself isn't just broken: `descendantIds(buildTree(...), "P1")`
+    over the identical dataset correctly returns `["C1","C2"]` when called
+    directly — proving the children WOULD be found if the cascade ran, which
+    makes their untouched state proof of the branch/return, not an artifact
+    of a broken tree walk.
+  - **S18-3 (age fallback), proven via the real badge/age render:** the
+    synthetic tasks (created 2026-01-01, `occurrenceStart: null`) rendered
+    "228 days old" through the unmodified `computeAgeLabel` — i.e., the
+    `occurrenceStart ?? createdAt` fallback path, not a new code path, which
+    is exactly S18-3's point (every pre-step-18 task is unaffected).
+  - **Recurrence badge, rendered and read back from the live DOM:** a
+    `daily`-recurring task's row showed `"🔁 Daily"`; a `weekly` task
+    anchored on Tuesday showed `"🔁 Weekly (Tue)"`; three non-recurring rows
+    all showed `display: "none"` with empty text — hidden entirely, not an
+    empty pill.
+  - **Not executable signed-out:** the actual `saveTask` write from
+    `handleSetRecurrenceClick`'s `enqueueMutation`, the real `prompt()`
+    dialogs it would show, and the checkbox handler's real advancing write
+    were never reached — `enqueueMutation`'s and the handlers' own
+    `if (!userId) return` guards fire first, and this session never set a
+    fake signed-in uid. The write bodies were instead proven by replicating
+    them verbatim against the real store/recurrence.js/render.js functions
+    (see the concrete values above), the same substitute this project has
+    used for every write path since step 11.
 
 ## Decisions
 
@@ -2465,6 +2678,108 @@ driving the real modules directly):**
   cap is enforced client-side by `planTagRewrite` before any write, the same
   belt-and-suspenders relationship every other title-length check in this
   codebase already has with the rules.
+- **step 18 (S18-0, USER DECISION 2026-08-18) — the plan's "Stop Recurrence"
+  context-menu row is SUPERSEDED.** The step-18 row in the original ladder
+  called for a "Stop Recurrence" menu action; product-spec.md §5:145-148
+  rules that out explicitly — deleting the task is what ends a cycle, and
+  "there is no separate 'stop repeating' state that leaves an inert task
+  behind." Asked the user directly; they chose to follow the spec over the
+  plan. Deletion already ends a cycle with zero new code (a deleted task is
+  neither rendered nor advanced). The recurrence *editor* itself still keeps
+  a "none" answer so a misconfigured rule can be corrected without deleting
+  the task — that is functionally a stop, but it is not a standalone menu
+  action presented as "the way to end a cycle," which is what the spec rules
+  out.
+- **step 18 (S18-1, storage)** — `recurrence: { kind, ... } | null` plus
+  `occurrenceStart: Timestamp | null`, both new task-document fields.
+  `isValidTask()` (firestore.rules:44-59) has no `hasOnly` clause and
+  mentions neither field, confirmed by reading it (not assumed) — so both
+  write with **no rules change**, exactly as `dueDate` (step 13) did. Rule
+  shapes: `{kind:'daily'}`; `{kind:'weekdays', days:number[]}` (0=Sun..6=Sat,
+  non-empty); `{kind:'weekly', anchorDay:number}` (preserves that weekday);
+  `{kind:'monthly', anchorDayOfMonth:number}` (1..31).
+- **step 18 (S18-2, locked) — advance is "step the rule forward until
+  strictly after TODAY," never "one step from the old due date."** A daily
+  task completed five days late becomes due tomorrow, not still-overdue —
+  this is what product-spec.md:141-142's "a daily task never reports itself
+  as months old" actually requires. `advanceRecurrence` (recurrence.js)
+  loops `stepOnce` until the result clears today's local midnight.
+- **step 18 (S18-3) — age resets via a new field, with a fallback that
+  avoids a migration.** `computeAgeLabel`'s one caller (render.js) now reads
+  `task.occurrenceStart ?? task.createdAt` instead of `task.createdAt`
+  alone. The `?? createdAt` fallback leaves every existing task's age
+  byte-identical (no backfill needed): `occurrenceStart` is `null` until a
+  recurring task's first completion ever stamps it, and is re-stamped to
+  the MOMENT OF THE ADVANCE (today), not to the new due date — a monthly
+  task's next occurrence can be weeks away, and age must still read as
+  freshly reset today, not as some future-dated or negative value.
+- **step 18 (S18-4) — monthly clamps to month end but re-anchors from the
+  STORED day-of-month, never from the current (possibly already-clamped)
+  due date.** Jan 31 → Feb 28/29 → **Mar 31**, never permanently degrading
+  to the 28th. This is why `anchorDayOfMonth` is stored (derived once, at
+  setup time, via `deriveAnchorFromDate`) rather than re-read off the
+  current due date on every advance — proven concretely (see the Verified
+  section above) against both a common year and a leap year.
+- **step 18 (S18-5) — a recurring task must have a due date.** Setting a
+  recurrence on a task with no due date defaults the due date to today
+  (`handleSetRecurrenceClick`, app.js) before deriving weekly/monthly's
+  anchor from it — a rule with no anchor cannot advance, and daily/weekdays
+  need a starting point to step forward from just as much as weekly/monthly
+  need one to derive their anchor from.
+- **step 18 (S18-6, locked) — completing a recurring task does NOT complete
+  it, and does NOT run the cascade.** The checkbox `change` listener's
+  completing branch (app.js) checks `task.recurrence` and, if set, advances
+  `dueDate`, restamps `occurrenceStart`, writes `completed: false` /
+  `closedByCascadeFrom: null`, and `return`s — **before** `buildTree`/
+  `descendantIds` are ever called for the plain-completion cascade. A
+  recurring parent's children are therefore not merely left alone by a
+  runtime check; the cascade code is syntactically unreachable from this
+  branch. The checkbox visually un-checks itself because the refetch still
+  shows `completed: false`.
+- **step 18 (S18-7) — no history of past occurrences.** One task, one
+  document, that keeps moving forward — `recurrence`/`occurrenceStart` are
+  overwritten in place on every advance, never appended to a list and never
+  used to spawn a second document. Matches product-spec.md:138-140 exactly:
+  "no history of past occurrences is kept... nothing accumulates in the
+  list."
+- **step 18 (mine — the editor is `prompt()`-based, not a new inline
+  display/input pair)** — recurrence needs a kind PLUS, for `weekdays`, a
+  set of days, which doesn't fit the single display/input pair every other
+  editable field (title/note/due date) uses. Matches step 17's tag-rename
+  precedent (`prompt()`/`confirm()` for a multi-field, non-trivial edit)
+  rather than inventing a fourth inline-editor shape for one field.
+- **step 18 (mine — recurrence.js has zero imports, unlike every other pure
+  module added since step 14)** — its advance arithmetic needs the exact
+  same local-midnight construction render.js already exports as
+  `localMidnight`, but importing it would create a render.js ↔
+  recurrence.js cycle: render.js's row badge needs recurrence.js's
+  `describeRecurrence`, and recurrence.js would need render.js's
+  `localMidnight` back. Rather than accept a cycle between two files loaded
+  as native ES modules with no bundler, `recurrence.js` duplicates the
+  one-line local-midnight construction internally (`localMidnightOf`) and
+  works only with plain `Date`s — callers (app.js) are responsible for
+  unwrapping a Firestore Timestamp via render.js's `timestampToDate` first.
+  If a later step needs a THIRD pure module to talk to both of these, this
+  is the entry to revisit — the two-file DAG (recurrence.js → nothing,
+  render.js → recurrence.js) only stays acyclic because recurrence.js never
+  needs anything back.
+- **step 18 (mine — a recurrence badge on the row, not spec-mandated)** — 
+  product-spec.md §5 never asks for a visible indicator that a task repeats;
+  it only requires the behavior. A `.task-item__recurrence-badge` (🔁 +
+  `describeRecurrence`) was added anyway, mirroring the existing
+  age/due-date/quadrant badges' precedent of surfacing render-only metadata
+  the spec assumes is visible somehow, and because a recurring task with no
+  visible sign it will recur is a plausible usability complaint later. If
+  this is unwanted polish, it is a one-line revert (drop the badge's two
+  `updateTaskElement` branches and its `createTaskElement` element) with no
+  effect on the underlying recurrence/advance logic.
+- **step 18 (not really a decision) — no change to `firestore.rules`,
+  `firestore.indexes.json`, or the write shape in `taskService.js`.** Every
+  recurrence write is still a whole-document `saveTask`, identical in shape
+  to every other mutation in this app; `normalizeTask` only adds the two new
+  fields' read-time defaults (S18-1), and `isValidTask()` (re-confirmed by
+  reading, not re-derived from step 13's note about `dueDate`) constrains
+  neither new field.
 
 ## Open items (not steps)
 

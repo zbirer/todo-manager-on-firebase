@@ -32,6 +32,18 @@ import {
   isValidTagToken,
   moveTagSettingsEntry,
 } from "./tagColors.js";
+// Step 18 (Recurrence): the pure advance/derive/parse arithmetic (S18-2/
+// S18-4) — this file only owns the prompt-based editor UI, the confirm/alert
+// wording, and the enqueueMutation-wrapped write; render.js imports
+// describeRecurrence too (the row badge), so wording can never drift between
+// the two places a rule is described.
+import {
+  RECURRENCE_KINDS,
+  advanceRecurrence,
+  deriveAnchorFromDate,
+  describeRecurrence,
+  parseWeekdaysInput,
+} from "./recurrence.js";
 // Step 15 (Quadrant mapping): app.js's own write handler below
 // (handleTagQuadrantChange) never needs to VALIDATE the incoming value — it
 // writes whatever the <select> held (or null for the blank option) straight
@@ -104,6 +116,15 @@ import {
   // the Overdue screen's own filter below and render.js's per-row display
   // styling, never a second copy.
   isOverdueTask,
+  // Step 18 (Recurrence): `timestampToDate` unwraps a task's `dueDate`
+  // (Firestore Timestamp | Date | null) into a plain Date before it's handed
+  // to recurrence.js's advance/derive functions, which only ever work with
+  // plain Dates (see recurrence.js's file header on why it has no imports of
+  // its own). `localMidnight` is the same local-midnight construction the
+  // due-date/overdue/age helpers already share, reused here for "today" and
+  // for the moment a recurring completion resets `occurrenceStart` to.
+  timestampToDate,
+  localMidnight,
 } from "./render.js";
 
 // Mirrors firestore.rules' isValidTask() caps. Checked here, client-side,
@@ -221,6 +242,11 @@ const taskMenuTogglePinItem = taskMenu.querySelector('[data-action="toggle-pin"]
 // openTaskMenuForTask below.
 const taskMenuEditDueDateItem = taskMenu.querySelector('[data-action="edit-due-date"]');
 const taskMenuClearDueDateItem = taskMenu.querySelector('[data-action="clear-due-date"]');
+// Step 18 (D10 precedent): "Set recurrence"/"Change recurrence" always opens
+// the same prompt-based editor (label toggles per whether a rule is already
+// set) — see openTaskMenuForTask below. There is no separate "Clear"/"Stop"
+// item (S18-0): the editor itself offers "none" as one of its answers.
+const taskMenuSetRecurrenceItem = taskMenu.querySelector('[data-action="set-recurrence"]');
 
 // Step 12 (D1/D8): the Focus section/list — a third container rendered
 // alongside Inbox/main from the same renderTasks call (render.js), hidden
@@ -337,6 +363,10 @@ function openTaskMenuForTask(taskId, x, y, context = "main") {
   // is offered only when there's actually a value to clear.
   taskMenuEditDueDateItem.textContent = task.dueDate ? "Change due date" : "Set due date";
   taskMenuClearDueDateItem.style.display = task.dueDate ? "" : "none";
+  // Step 18 (D10 precedent): label toggles per whether a rule is already
+  // set; always offered (never hidden) — a task with no due date can still
+  // open the editor, which will default its due date to today (S18-5).
+  taskMenuSetRecurrenceItem.textContent = task.recurrence ? "Change recurrence" : "Set recurrence";
   taskMenu.dataset.taskId = taskId;
   taskMenu.dataset.context = context;
   taskMenu.hidden = false;
@@ -741,6 +771,46 @@ taskSection.addEventListener("change", (event) => {
         // Always resync with Firestore's real state, same as the completing
         // branch — the checkbox's own checked state comes back from this
         // refresh, so there's nothing to manually revert here on failure.
+        await refreshTasks();
+      }
+      return;
+    }
+
+    // Step 18 (S18-6, locked): completing a RECURRING task never actually
+    // completes it. This branches BEFORE the plain `completed: true` write
+    // and the cascade below, and returns immediately — a recurring task's
+    // own completion never runs the cascade at all, so no descendant is ever
+    // touched by it (product-spec.md's recurrence bullet only ever describes
+    // ONE task moving forward, never a subtree). The checkbox visually
+    // un-checks itself because the refetch below still has `completed: false`
+    // on this task.
+    if (task.recurrence) {
+      try {
+        // S18-5 already guarantees a recurring task has a due date at the
+        // moment recurrence was set, but this re-derives from whatever is
+        // actually on the document right now (architecture rule: re-read at
+        // run time) rather than trusting that invariant blindly — a due date
+        // cleared out from under a recurring task some other way still needs
+        // a sane fallback to advance from.
+        const fromDate = task.dueDate ? timestampToDate(task.dueDate) : localMidnight(new Date());
+        const nextDueDate = advanceRecurrence(fromDate, task.recurrence);
+        // S18-3: occurrenceStart is stamped to the MOMENT of this advance
+        // (today), not to nextDueDate — the new occurrence begins now, and
+        // age must reset to "today" regardless of how far out the next due
+        // date lands (a monthly task's next occurrence can be weeks away;
+        // its age should still read as freshly reset, not as a negative or
+        // future-dated age).
+        await saveTask(userId, {
+          ...task,
+          dueDate: nextDueDate,
+          occurrenceStart: localMidnight(new Date()),
+          completed: false,
+          closedByCascadeFrom: null,
+        });
+      } catch (error) {
+        console.error("Failed to advance recurring task:", error);
+        alert("Could not advance the recurring task. The list has been refreshed to show what actually saved.");
+      } finally {
         await refreshTasks();
       }
       return;
@@ -1588,6 +1658,101 @@ async function handleClearDueDateClick(taskId) {
     } catch (error) {
       console.error("Failed to clear due date:", error);
       alert("Could not clear due date.");
+    } finally {
+      await refreshTasks();
+    }
+  });
+}
+
+// Step 18 (Recurrence): the context menu's "Set recurrence"/"Change
+// recurrence" item. Prompt-based, matching this codebase's existing pattern
+// for a multi-field, non-trivial edit with no dedicated inline UI (see
+// handleTagRenameClick's prompt() above) — recurrence needs a kind PLUS,
+// for "weekdays", a set of days, which doesn't fit the single inline
+// display/input pair every other editable field (title/note/due date) uses.
+//
+// S18-0's residual: "none" here is the ONLY way to stop a recurrence short of
+// deleting the task — there is no separate "Stop recurrence" menu action.
+// All prompting happens BEFORE enqueueMutation, same as handleTagRenameClick;
+// the mutation itself only re-reads the current task and writes.
+async function handleSetRecurrenceClick(taskId) {
+  const userId = getCurrentUserId();
+  const task = getTasks().find((t) => t.id === taskId);
+  if (!userId || !task || task.deleted) return;
+
+  const currentLabel = describeRecurrence(task.recurrence);
+  const rawKind = prompt(
+    `Repeat this task? Enter one of: ${RECURRENCE_KINDS.join(", ")}, or none.\n(Currently: ${currentLabel})`,
+    task.recurrence ? task.recurrence.kind : "none"
+  );
+  if (rawKind == null) return; // cancelled
+  const kind = rawKind.trim().toLowerCase();
+
+  if (kind === "none" || kind === "") {
+    if (!task.recurrence) return; // already not repeating — nothing to change
+    await enqueueMutation(async () => {
+      const currentUserId = getCurrentUserId();
+      const currentTask = getTasks().find((t) => t.id === taskId);
+      if (!currentUserId || !currentTask || currentTask.deleted) return;
+      try {
+        await saveTask(currentUserId, { ...currentTask, recurrence: null });
+      } catch (error) {
+        console.error("Failed to stop recurrence:", error);
+        alert("Could not stop the recurrence.");
+      } finally {
+        await refreshTasks();
+      }
+    });
+    return;
+  }
+
+  if (!RECURRENCE_KINDS.includes(kind)) {
+    alert(`"${rawKind}" isn't a recurrence option. Enter ${RECURRENCE_KINDS.join(", ")}, or none.`);
+    return;
+  }
+
+  // "weekdays" needs a second prompt for which days; every other kind
+  // derives its anchor from the due date inside the mutation below.
+  let days = null;
+  if (kind === "weekdays") {
+    const rawDays = prompt(
+      "Which days? Comma-separated, 0=Sunday .. 6=Saturday (e.g. 1,3,5 for Mon/Wed/Fri)",
+      Array.isArray(task.recurrence?.days) ? task.recurrence.days.join(",") : ""
+    );
+    if (rawDays == null) return; // cancelled
+    days = parseWeekdaysInput(rawDays);
+    if (!days) {
+      alert("Enter at least one day, 0 through 6, comma-separated.");
+      return;
+    }
+  }
+
+  await enqueueMutation(async () => {
+    const currentUserId = getCurrentUserId();
+    const currentTask = getTasks().find((t) => t.id === taskId);
+    if (!currentUserId || !currentTask || currentTask.deleted) return;
+    try {
+      // S18-5: a recurring task must have a due date — default to today if
+      // it doesn't have one, so weekly/monthly have a real date to derive
+      // their anchor from and daily/weekdays have something to advance from.
+      // Re-read at run time (architecture rule), not from the `task` closed
+      // over above, which may be stale by the time this actually executes.
+      const existingDueDate = currentTask.dueDate ? timestampToDate(currentTask.dueDate) : null;
+      const anchorDate = existingDueDate ?? localMidnight(new Date());
+
+      let recurrence;
+      if (kind === "weekdays") recurrence = { kind, days };
+      else if (kind === "weekly" || kind === "monthly") recurrence = { kind, ...deriveAnchorFromDate(kind, anchorDate) };
+      else recurrence = { kind }; // daily
+
+      await saveTask(currentUserId, {
+        ...currentTask,
+        recurrence,
+        dueDate: existingDueDate ? currentTask.dueDate : anchorDate,
+      });
+    } catch (error) {
+      console.error("Failed to set recurrence:", error);
+      alert("Could not set the recurrence.");
     } finally {
       await refreshTasks();
     }
@@ -2480,6 +2645,7 @@ taskMenu.addEventListener("click", async (event) => {
   else if (action === "toggle-pin") await handleTogglePinClick(taskId);
   else if (action === "edit-due-date") handleEditDueDateMenuClick(taskId, context);
   else if (action === "clear-due-date") await handleClearDueDateClick(taskId);
+  else if (action === "set-recurrence") await handleSetRecurrenceClick(taskId);
   else if (action === "delete") await handleDeleteClick(taskId);
 });
 

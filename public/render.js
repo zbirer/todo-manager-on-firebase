@@ -67,19 +67,27 @@
 
 // Step 14 (Tag colors): a row's colors are resolved per-render from the task's
 // TITLE plus the user's tag settings map — never from a stored per-task field
-// (the old `task.colors`, which nothing reads anymore, D3). `resolveTagColor`
-// is pure and lives in tagColors.js alongside `parseTags`, so this module
-// never re-derives what counts as a tag. The settings map itself is threaded
-// in as a parameter rather than imported: render.js must not import store.js
-// (the same module-ownership boundary that makes `onEditCancelled` a callback
-// instead of a direct interaction-guard call).
+// (the old `task.colors`, which nothing reads anymore, D3). The settings map
+// itself is threaded in as a parameter rather than imported: render.js must
+// not import store.js (the same module-ownership boundary that makes
+// `onEditCancelled` a callback instead of a direct interaction-guard call).
+//
+// Step 24 (Workflowy-style restyle, THE KEY PIVOT): step 14's original rule
+// painted the WHOLE ROW in the last-colored-tag's colors (`resolveTagColor`,
+// tagColors.js). The target look is a light, text-first row list, so that
+// row-wide paint has no home to live in anymore — colors now land on the
+// individual tag PILL inside the title instead (see `renderTitleInto` and
+// `.task-item__tag` below), resolved per-tag via `readTagColors` rather than
+// per-row via `resolveTagColor` (which is why that import is gone: nothing
+// in this file calls it any longer). `readTagColors` is still pure and lives
+// in tagColors.js alongside `parseTags`, so this module never re-derives
+// what counts as a tag's color, only where that color gets painted.
 import { buildTree, depthOf } from "./taskTree.js";
 import {
   DEFAULT_TAG_BG,
   DEFAULT_TAG_FG,
   readTagColors,
-  resolveTagColor,
-  // Step 15 (Quadrant mapping): a SEPARATE resolver from resolveTagColor above
+  // Step 15 (Quadrant mapping): a SEPARATE resolver from readTagColors above
   // — see tagColors.js's own comment on why these two must never be
   // conflated. describeQuadrant/quadrantBadgeText feed the task-row badge
   // (Q6). Step 16 (Priority ordering) is the first thing in this file to
@@ -572,6 +580,18 @@ function createTaskElement(taskId) {
   dragHandle.textContent = "⠿";
   li.appendChild(dragHandle);
 
+  // Step 24 (Workflowy-style restyle): a small round "bullet" dot, purely
+  // decorative — this app has no collapse/expand-by-bullet gesture, so it
+  // carries no listener and no `aria-*` role, unlike every other control in
+  // this function. It exists only to read as "this is a row" the way
+  // Workflowy's own bullet does, sitting between the "⋯" menu button and the
+  // checkbox per the target design. `aria-hidden` keeps it out of the
+  // accessibility tree since it conveys nothing a screen reader user needs.
+  const bullet = document.createElement("span");
+  bullet.className = "task-item__bullet";
+  bullet.setAttribute("aria-hidden", "true");
+  li.appendChild(bullet);
+
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
   checkbox.className = "task-item__checkbox";
@@ -593,21 +613,37 @@ function createTaskElement(taskId) {
   titleInput.style.display = "none";
   li.appendChild(titleInput);
 
+  // Step 24 (Workflowy-style restyle): note + due-date/age/badges used to
+  // each be their own `flex-basis: 100%` row directly under `li` — title
+  // row, then a full-width note row, then a full-width meta row, three
+  // lines summing to the ~84px-tall rows the target design calls out by
+  // name. `secondary` is the one wrapper that now forces the SINGLE extra
+  // line break (it alone gets `flex-basis: 100%` in CSS); everything inside
+  // it — note text, due date, age, badges — flows as one wrapped inline
+  // group on that one line instead of two more forced-full-width rows. Its
+  // own children (noteDisplay/noteInput/meta below) are unchanged internally
+  // — only their PARENT moved from `li` to this wrapper — so nothing about
+  // how they're read or updated elsewhere in this file had to change.
+  const secondary = document.createElement("div");
+  secondary.className = "task-item__secondary";
+  li.appendChild(secondary);
+
   // Note: same display/edit-input pairing as the title.
   const noteDisplay = document.createElement("div");
   noteDisplay.className = "task-item__note-display";
   noteDisplay.dir = "auto";
-  li.appendChild(noteDisplay);
+  secondary.appendChild(noteDisplay);
 
   const noteInput = document.createElement("textarea");
   noteInput.className = "task-item__note-input";
   noteInput.dir = "auto";
   noteInput.maxLength = 10000;
   noteInput.style.display = "none";
-  li.appendChild(noteInput);
+  secondary.appendChild(noteInput);
 
-  // Step 13 (Dates, D10): due date + age share one full-width "meta" row,
-  // same flex-basis-100% pattern as the note row above. Due date follows the
+  // Step 13 (Dates, D10): due date + age share one "meta" line, now nested
+  // inside `secondary` above rather than forcing their own full-width row
+  // directly under `li` (see that comment for why). Due date follows the
   // exact display/edit-input pairing every other editable field uses (D10:
   // "an inline editor on the row reusing step 2's inline-edit machinery") —
   // clicking the display opens the `<input type="date">`, same
@@ -617,7 +653,7 @@ function createTaskElement(taskId) {
   // recomputed unconditionally on every updateTaskElement call.
   const meta = document.createElement("div");
   meta.className = "task-item__meta";
-  li.appendChild(meta);
+  secondary.appendChild(meta);
 
   const dueDisplay = document.createElement("span");
   dueDisplay.className = "task-item__due-display";
@@ -660,6 +696,15 @@ function createTaskElement(taskId) {
     li,
     menuBtn,
     dragHandle,
+    // `bullet` and `secondary` are held here for the same reason every other
+    // owned element is (so a future change never has to re-query them off
+    // `li`), but neither needs any entry in updateTaskElement's update path:
+    // `bullet` is static decoration with no task-dependent state at all, and
+    // `secondary` is a plain layout wrapper whose own look never changes —
+    // only the task-dependent CHILDREN it holds (noteDisplay, noteInput,
+    // meta and everything inside meta, all already handled below) do.
+    bullet,
+    secondary,
     checkbox,
     label,
     titleInput,
@@ -680,6 +725,14 @@ function createTaskElement(taskId) {
     // own edit box is still open would leave the pre-edit text on screen
     // (see endTitleEdit).
     task: null,
+    // Step 24: the tag-settings map this row was last rendered with, kept for
+    // the identical reason `task` is — endTitleEditIn (below) has to rebuild
+    // the title's tag pills from scratch on every edit-close, but its own
+    // exported wrapper (`endTitleEdit(taskId, context)`) takes no tagSettings
+    // parameter (app.js's call sites are fixed and out of scope for this
+    // restyle), so the value has to be stashed here instead of threaded
+    // through as an argument.
+    tagSettings: null,
   };
 }
 
@@ -690,26 +743,25 @@ function updateTaskElement(entry, task, depth, tagSettings, isSearchContext = fa
   const { li, checkbox, label, titleInput, noteDisplay, noteInput } = entry;
 
   entry.task = task;
+  // Step 24: stashed so endTitleEditIn (which has no tagSettings parameter of
+  // its own — see the entry-object comment on this field) can rebuild the
+  // title's tag pills after an edit closes.
+  entry.tagSettings = tagSettings;
 
   li.className =
     "task-item" +
     (task.completed ? " task-item--completed" : "") +
     (isSearchContext ? " task-item--search-context" : "");
-  // Step 14 (D3): the WHOLE ROW takes the winning tag's colors. The winner is
-  // the last COLORED tag in the title string (resolveTagColor, tagColors.js —
-  // read its comment for why "last colored", and for why step 15's quadrant
-  // rule is a different computation that must not reuse this one). Resolved
-  // fresh on every update from the title text itself, never from a stored
-  // per-task field: `task.colors` is no longer read anywhere in this codebase
-  // (it survives on old documents as a dead field, deliberately not migrated).
-  //
-  // No colored tag => the inline styles are CLEARED (empty string removes the
-  // property) rather than set to a hardcoded pair, so the row falls back to
-  // index.html's default `.task-item` colors — one place owns the default look
-  // instead of two that could drift.
-  const rowColors = resolveTagColor(task.title, tagSettings);
-  li.style.color = rowColors ? rowColors.fg : "";
-  li.style.backgroundColor = rowColors ? rowColors.bg : "";
+  // Step 24 (Workflowy-style restyle, THE KEY PIVOT): step 14 (D3) used to
+  // paint the WHOLE ROW in the last-colored-tag's colors here
+  // (`resolveTagColor`, tagColors.js) — that's gone. The target design keeps
+  // every row light regardless of its tags; a tag's own color now paints only
+  // that tag's PILL inside the title (see `renderTitleInto` below, called
+  // from the `!entry.editingTitle` branch), resolved per-tag via
+  // `readTagColors` rather than per-row via `resolveTagColor`. `task.colors`
+  // is still not read anywhere in this codebase (it survives on old
+  // documents as a dead field, deliberately not migrated) — this paragraph
+  // is just no longer where its replacement lives either.
   // Indentation is CSS's job (see the `--depth` rule in index.html) — this
   // only ever supplies the number, computed by taskTree.js's depthOf, never
   // re-derived from `ancestors.length` here.
@@ -725,13 +777,14 @@ function updateTaskElement(entry, task, depth, tagSettings, isSearchContext = fa
   if (!entry.editingTitle) {
     // `task.tags` is derived FROM `task.title` (app.js's parseTags) — the
     // tag text already sits inline in the title exactly as typed, so the
-    // title alone is the whole display. Appending a `[tags]` suffix here
-    // used to show every tag twice. Step 14's per-tag colors deliberately do
-    // NOT style individual tag tokens inside the title either — D3 colors the
-    // whole ROW, so the title stays one plain text node and nothing has to
-    // split it into per-tag spans (which would fight `dir="auto"`'s bidi
-    // handling of a mixed Hebrew/English string).
-    label.textContent = task.title;
+    // title alone is the whole display; nothing here ever appends a second
+    // `[tags]` suffix. Step 24 splits that same string into text/tag runs
+    // (`renderTitleInto`) so each tag token can carry its own pill — the
+    // RAW string is still the only thing ever written to `titleInput.value`,
+    // which is what the inline-editable title actually reads/writes; the
+    // pills are a read-only presentation of `label`, never a second copy of
+    // the data.
+    renderTitleInto(label, task.title, tagSettings);
     titleInput.value = task.title;
   }
 
@@ -763,8 +816,8 @@ function updateTaskElement(entry, task, depth, tagSettings, isSearchContext = fa
   entry.ageDisplay.textContent = computeAgeLabel(task.occurrenceStart ?? task.createdAt);
 
   // Step 15 (Q6): resolved fresh from the title on every render, exactly like
-  // resolveTagColor above and for the identical reason (D12) — never from the
-  // cached `tags` array. `null` (unranked — no configured tag at all) hides
+  // the tag-pill colors above and for the identical reason (D12) — never from
+  // the cached `tags` array. `null` (unranked — no configured tag at all) hides
   // the badge entirely rather than showing an empty/placeholder one; a
   // resolved quadrant (including the bottom quadrant, which IS ranked) shows
   // its compact token with the full label on `title` for anyone who hovers.
@@ -837,25 +890,28 @@ function beginTitleEditIn(map, taskId) {
 
 // Closing an edit must resync the text it is about to reveal. While
 // `editingTitle` was true, updateTaskElement deliberately skipped writing
-// `label.textContent` so a refresh couldn't clobber what the user was
-// typing — which means the label still holds the title as it was when the
-// edit opened. app.js commits a title by awaiting the write AND the
-// refetch/re-render, and only then calls this; that re-render is exactly one
-// of the passes the guard skipped, so without the resync below the row would
-// reveal the pre-edit title after a perfectly successful save and look as
-// though the edit had been silently discarded.
+// `label`'s content so a refresh couldn't clobber what the user was
+// typing — which means the label still holds the title (and pills) as they
+// were when the edit opened. app.js commits a title by awaiting the write AND
+// the refetch/re-render, and only then calls this; that re-render is exactly
+// one of the passes the guard skipped, so without the resync below the row
+// would reveal the pre-edit title after a perfectly successful save and look
+// as though the edit had been silently discarded.
 //
 // `entry.task` is the row's last rendered task (updateTaskElement keeps it
 // current even on the passes it skips), so it is the saved value in every
 // case this runs: a committed edit, an Escape cancel, and a failed write
 // that already reverted the input — all three want the last-known-saved
-// title back on screen.
+// title back on screen. Step 24: rebuilt through `renderTitleInto` (using
+// `entry.tagSettings`, stashed by the same last update — see the entry-object
+// comment) rather than a plain `textContent` write, so the pills reappear
+// exactly as they would on a normal, non-edit render.
 function endTitleEditIn(map, taskId) {
   const entry = map.get(taskId);
   if (!entry) return;
   entry.editingTitle = false;
   if (entry.task) {
-    entry.label.textContent = entry.task.title;
+    renderTitleInto(entry.label, entry.task.title, entry.tagSettings);
     entry.titleInput.value = entry.task.title;
   }
   entry.titleInput.style.display = "none";
@@ -993,6 +1049,60 @@ export function getDueDateInputValue(taskId, context) {
 }
 export function setDueDateInputValue(taskId, context, value) {
   setDueDateInputValueIn(mapForContext(context), taskId, value);
+}
+
+// --- Title rendering (tag pills, step 24) -----------------------------------
+// THE KEY PIVOT of the Workflowy-style restyle: a tag token now renders as a
+// small colored pill INLINE inside the title text, instead of the pre-step-24
+// rule where the winning tag's colors painted the entire row (see the
+// `li.style` comment this replaced in updateTaskElement above). Each pill
+// carries its OWN resolved color pair via `readTagColors` — never
+// `resolveTagColor`'s "last colored tag wins the whole row" computation,
+// which has no row-wide paint left to feed now that the row itself stays
+// light regardless of which tags a task carries.
+//
+// tagColors.js's own `TAG_PATTERN` (which `parseTags` is built on) is not
+// exported — `parseTags` only returns the matched tag STRINGS, not their
+// offsets in the title, and offsets are exactly what's needed here to split
+// the string into alternating text/tag runs. `TITLE_TAG_PATTERN` below is
+// therefore this file's own copy of that exact same `[#@]\w+` shape — not a
+// second, independent decision about what counts as a tag (tagColors.js
+// stays the one place that decision is made; if its shape ever changes, this
+// pattern has to change with it) — used purely as a splitting tool, the same
+// way `URL_PATTERN` below is `renderNoteInto`'s splitting tool for URLs.
+const TITLE_TAG_PATTERN = /([#@]\w+)/g;
+
+// Same "split on a single capturing group, odd indices are matches" idiom
+// `renderNoteInto` (below) uses for URLs — one shared trick, two different
+// token types. Built with createElement/textContent only, same
+// no-innerHTML-on-user-text rule renderNoteInto documents, since a title is
+// exactly as free-typed as a note.
+function renderTitleInto(container, title, tagSettings) {
+  container.replaceChildren();
+  const str = String(title ?? "");
+  const parts = str.split(TITLE_TAG_PATTERN);
+  parts.forEach((part, index) => {
+    if (!part) return;
+    if (index % 2 === 1) {
+      // An odd-indexed part is a matched tag token. `readTagColors` returns
+      // null for a tag with no configured colors (or no settings entry at
+      // all) — CSS's `.task-item__tag` default styling is what an uncolored
+      // pill looks like then, the same "clear the inline override, let the
+      // class own the default" split step 14 originally used for the
+      // whole row.
+      const colors = readTagColors(tagSettings?.tags?.[part]);
+      const pill = document.createElement("span");
+      pill.className = "task-item__tag";
+      if (colors) {
+        pill.style.color = colors.fg;
+        pill.style.backgroundColor = colors.bg;
+      }
+      pill.textContent = part;
+      container.appendChild(pill);
+    } else {
+      container.appendChild(document.createTextNode(part));
+    }
+  });
 }
 
 // --- Note rendering ---------------------------------------------------------

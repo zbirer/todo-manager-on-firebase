@@ -55,6 +55,19 @@
       border: 1px solid #d1d5db;
       font-size: 14px;
     }
+    /* Bug fix: the blanket `input` rule above (width: 70%, padding: 8px 12px)
+       was written with the "Add task"/search text boxes in mind and has no
+       carve-out for a checkbox — with no dedicated `.task-item__checkbox`
+       selector of its own, a task row's checkbox inherited it wholesale and
+       rendered ~616px wide, stretching across the whole row and shoving the
+       title to the far right. Every checkbox in the app (this one, and
+       `#show-completed-toggle`) gets its natural size back here; the
+       task-item-specific rule below adds the couple of properties that only
+       matter inside that row's flex layout. */
+    input[type="checkbox"] {
+      width: auto;
+      padding: 0;
+    }
     input:focus {
       outline: 2px solid #3b82f6;
       border-color: transparent;
@@ -74,31 +87,74 @@
       font-size: 14px;
       color: #374151;
     }
-    /* Step 14 (D3): the colors below are the DEFAULT row style — what a task
-       with no colored tag looks like. render.js resolves the winning tag's
-       colors per render and sets them inline on the <li>, overriding these;
-       when no tag wins it CLEARS those inline properties rather than writing a
-       hardcoded pair, so this rule is the single owner of the default look.
-       (Before step 14 these same two values were the fallback hardcoded in
-       render.js, read off a stored per-task `colors` field that nothing reads
-       anymore.)
-       flex-wrap lets the note row (flex-basis: 100%, below) drop onto its
-       own line under the checkbox+title row instead of squeezing into it. */
+    /* Step 24 (Workflowy-style restyle, THE KEY PIVOT): step 14 (D3) used to
+       paint the winning tag's colors on the WHOLE ROW here — render.js
+       resolved them per render and set them inline on the <li>, clearing
+       back to these two defaults when no tag won. That's gone: the target
+       look is a light, text-first row list ("not colored blocks"), so every
+       row now stays painted in these same two defaults REGARDLESS of its
+       tags — render.js no longer touches `li.style.color`/
+       `li.style.backgroundColor` at all. A tag's own color now paints only
+       that tag's pill inside the title instead (see `.task-item__tag` below
+       and `renderTitleInto` in render.js).
+       `position: relative` anchors the `::before` nesting-guide-line below.
+       The row-gap half of `gap` is intentionally small: the title line and
+       the secondary note/meta line beneath it (`.task-item__secondary`
+       below) sitting close together is most of what makes a row read as
+       compact rather than the old ~84px-tall block. */
     li.task-item {
+      position: relative;
       display: flex;
       align-items: center;
       flex-wrap: wrap;
-      gap: 8px;
-      padding: 10px;
-      margin: 5px 0;
-      color: #ffffff;
-      background-color: #3b82f6;
+      row-gap: 2px;
+      column-gap: 8px;
+      padding: 3px 8px;
+      margin: 0;
+      color: #1f2937;
+      background-color: transparent;
       /* Depth comes from taskTree.js's depthOf, set as a custom property by
          render.js (li.style.setProperty("--depth", depth)) — this is the
          only place the number becomes a visual indent. */
       margin-left: calc(var(--depth, 0) * 24px);
       border-radius: 4px;
       font-family: sans-serif;
+    }
+    /* A very subtle hover tint — a Workflowy-style row has no real
+       "background" of its own, just this faint highlight while the pointer
+       sits over it. */
+    li.task-item:hover {
+      background-color: #f3f4f6;
+    }
+    /* Step 24: one thin vertical guide line PER ANCESTOR LEVEL, drawn once
+       per row rather than via nested <ul>s — this app deliberately keeps a
+       flat <li> list at every depth (see render.js's file-header comment on
+       why: nested elements would mean tearing down and rebuilding whole
+       subtrees on every refresh). `left`/`width` both reach back exactly as
+       far as this row's own `margin-left` above just pushed it right — the
+       whole indent gutter, all the way to the true left edge — and the
+       repeating-linear-gradient draws one 1px line every 24px across that
+       span, so e.g. a depth-3 row shows three lines, one under each of its
+       three ancestors' bullet columns. Purely decorative
+       (`pointer-events: none`); invisible at depth 0 since `left`/`width`
+       both resolve to 0 there. */
+    li.task-item::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: calc(-1 * var(--depth, 0) * 24px);
+      width: calc(var(--depth, 0) * 24px);
+      background-image: repeating-linear-gradient(
+        to right,
+        transparent 0,
+        transparent 11px,
+        #e5e7eb 11px,
+        #e5e7eb 12px,
+        transparent 12px,
+        transparent 24px
+      );
+      pointer-events: none;
     }
     .task-item--completed .task-item__label {
       text-decoration: line-through;
@@ -130,22 +186,74 @@
       font-size: 14px;
       padding: 4px 6px;
       border-radius: 4px;
-      border: 1px solid rgba(255, 255, 255, 0.6);
+      border: 1px solid #d1d5db;
       color: inherit;
-      background-color: rgba(255, 255, 255, 0.15);
+      background-color: #ffffff;
     }
-    /* Note row always spans the full width, indented to sit under the title
-       rather than the checkbox. */
+    /* Step 24: a tag pill rendered INLINE inside the title text (see
+       renderTitleInto in render.js) — each pill carries its OWN resolved
+       fg/bg pair as an inline style, painted the same way `li.task-item`
+       used to be painted pre-step-24 (see that rule's own comment), just
+       aimed at one tag token instead of the whole row. A tag with no
+       configured colors gets this neutral default instead of an inline
+       override, so every tag token still reads as "a tag" whether or not it
+       has been assigned a color. */
+    .task-item__tag {
+      display: inline-block;
+      padding: 0 5px;
+      border-radius: 3px;
+      font-size: 0.9em;
+      font-weight: 500;
+      background-color: #eef0f3;
+      color: #4b5563;
+    }
+    /* Step 24: the small round "bullet" dot sitting between the "⋯" menu
+       button and the checkbox (see createTaskElement in render.js) — purely
+       decorative, since this app has no collapse/expand-by-bullet gesture. */
+    .task-item__bullet {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background-color: #9ca3af;
+      flex-shrink: 0;
+    }
+    /* Bug fix (see the global `input[type="checkbox"]` rule above for the
+       root cause it shares): this row-specific rule only adds what the flex
+       layout itself needs on top of that — no shrinking under a long
+       flex: 1 title beside it, and no default user-agent margin nudging it
+       out of vertical alignment with the bullet/label either side of it. */
+    .task-item__checkbox {
+      flex-shrink: 0;
+      margin: 0;
+    }
+    /* Step 24: note + due-date/age/badges now share ONE secondary line below
+       the title instead of each being its own flex-basis:100% row — the old
+       shape (title row, then a full-width note row, then a full-width meta
+       row) is exactly what made a row ~84px tall. This wrapper is the only
+       thing that still forces a line break (`flex-basis: 100%`); the note
+       and the meta group inside it just wrap as ordinary inline flex items
+       on that one line. `margin-left` approximates the title's own left
+       edge (see createTaskElement's row-controls comment in render.js — menu
+       button + drag handle + bullet + checkbox + the gaps between them isn't
+       a fixed width, so this is a close visual match, not a computed one). */
+    .task-item__secondary {
+      flex-basis: 100%;
+      margin-left: 34px;
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      column-gap: 8px;
+      font-size: 12px;
+      color: #6b7280;
+    }
     .task-item__note-display,
     .task-item__note-input {
-      flex-basis: 100%;
-      margin-left: 28px;
       font-size: 13px;
     }
     .task-item__note-display {
       cursor: text;
       white-space: pre-wrap;
-      opacity: 0.9;
+      color: #6b7280;
     }
     .task-item__note-display a {
       color: inherit;
@@ -156,44 +264,54 @@
       opacity: 0.6;
     }
     .task-item__note-input {
-      width: calc(100% - 28px);
+      /* Step 24: forces its own line WITHIN the secondary wrapper while open
+         for editing — a multi-line textarea sitting inline next to the due
+         date/age text would look cramped. The meta group below it simply
+         wraps onto the next line inside the same wrapper, so this is still
+         one cohesive secondary section, never a third full-width row on the
+         row itself. */
+      flex-basis: 100%;
       min-height: 40px;
       padding: 4px 6px;
       border-radius: 4px;
-      border: 1px solid rgba(255, 255, 255, 0.6);
+      border: 1px solid #d1d5db;
       font-family: inherit;
       color: inherit;
-      background-color: rgba(255, 255, 255, 0.15);
+      background-color: #ffffff;
       resize: vertical;
     }
-    /* Step 13 (Dates): the due-date + age row, same full-width/indented
-       pattern as the note row above, one line below it. */
+    /* Step 13 (Dates): due date + age, now one more inline-flex group inside
+       `.task-item__secondary` above rather than its own full-width row. */
     .task-item__meta {
-      flex-basis: 100%;
-      margin-left: 28px;
-      font-size: 12px;
       display: flex;
-      align-items: center;
-      gap: 10px;
+      align-items: baseline;
+      gap: 8px;
       flex-wrap: wrap;
-      opacity: 0.85;
     }
     .task-item__due-display {
       cursor: text;
     }
     /* D3: overdue is a distinct, attention-getting state — never applied to
-       a task due today or in the future (isOverdueTask, render.js). */
+       a task due today or in the future (isOverdueTask, render.js). Step 24:
+       a more saturated red than the old #fca5a5 — that pale red was chosen
+       for legibility on the old dark-blue row background and reads as
+       barely-there against this design's light one. */
     .task-item__due-display--overdue {
-      color: #fca5a5;
+      color: #dc2626;
       font-weight: 600;
     }
     .task-item__due-input {
+      /* Step 24: `width: auto` opts this out of the global `input` rule's
+         70% width (see that rule's own comment above) the same way the
+         checkbox fix does — an `<input type="date">` has no business
+         stretching across most of a compact secondary line. */
+      width: auto;
       font-size: 12px;
       padding: 2px 4px;
       border-radius: 4px;
-      border: 1px solid rgba(255, 255, 255, 0.6);
+      border: 1px solid #d1d5db;
       color: inherit;
-      background-color: rgba(255, 255, 255, 0.15);
+      background-color: #ffffff;
     }
     .task-item__age {
       opacity: 0.75;
@@ -206,6 +324,9 @@
     /* Step 18 (Recurrence): same compact-pill shape reused for the recurrence
        badge below — hidden entirely (display: none, set in render.js) for a
        non-recurring task rather than shown empty, same as the quadrant badge. */
+    /* Step 24: translucent white made sense as a tint over the old solid-blue
+       row; against this design's light row it would barely tint the row at
+       all, so both badges get a real light-grey pill instead. */
     .task-item__quadrant-badge,
     .task-item__recurrence-badge {
       display: inline-block;
@@ -213,7 +334,8 @@
       border-radius: 999px;
       font-size: 11px;
       font-weight: 600;
-      background-color: rgba(255, 255, 255, 0.25);
+      background-color: #e5e7eb;
+      color: #374151;
     }
     /* Step 22: the "⋯" affordance — a real <button>, not a span, so it is
        natively focusable/keyboard-activatable rather than needing its own

@@ -136,12 +136,13 @@ title those two are not the same.
 - **Visual Color Coding:** I can assign custom foreground and background colors to
   specific tags, on the **same tag settings page** that assigns matrix quadrants
   (§7) — one screen owns everything about a tag, so I never hunt for where a tag is
-  configured. Applying a tag automatically colors the task; if multiple tags are
-  applied, the **last tag in the title text** forces the color — last meaning last
-  in the string as typed, which in a Hebrew title is the tag furthest to the *left*
-  on screen (§1). Because tags are part of the title, re-typing the title to
-  reorder them changes the color, which keeps the rule predictable: what wins is
-  what I typed last.
+  configured. Each tag renders as its own small colored pill, inline within the
+  title text, in that tag's own configured foreground and background — a title
+  carrying several colored tags shows several differently colored pills side by
+  side, each independent of the others. The task row itself carries no color of
+  its own: coloring lives on the tag, never on the task, so a title with no
+  colored tags, one colored tag, or several colored tags all look identical
+  apart from the pills themselves.
 
 ## 5. Dates & Temporal Tracking
 

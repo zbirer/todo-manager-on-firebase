@@ -3840,3 +3840,55 @@ Decisions made at planning time, with reasoning:
 - Both indent directions inherit the existing 7-level depth-cap refusal via
   `canReparent` unchanged — no new depth logic was written for either
   direction.
+
+## Task row restyle + per-tag colors (2026-08-18)
+
+Product decision, at the user's request: after being told the list still
+looked unchanged, the user supplied a Workflowy-style reference UI and asked
+for the row to match it. Three things changed together.
+
+**Visual restyle.** Rows were tall, saturated-blue blocks (84px, white text on
+`#3b82f6`), with the note and the due-date/meta line each wrapping onto their
+own full-width row. They are now compact light rows (~41px, dark `#1f2937`
+text on a transparent/near-white background, a subtle grey tint on hover),
+with a small bullet between the ⋯ button and the checkbox, note and meta
+demoted to small grey subtext inside a `.task-item__secondary` wrapper, and
+nesting shown by indentation plus a subtle vertical guide line rather than by
+the row's own weight. `--depth` (set in `render.js` via
+`li.style.setProperty("--depth", depth)`) remains the **single** source of
+indentation — the restyle did not introduce a second one; the guide line
+reads the same custom property.
+
+**Tag color moved from the row to the tag — the real spec change.** Before
+this, `resolveTagColor(title, tagSettings)` (`public/tagColors.js:107`)
+painted the **entire row** in one winning tag's colors, and when a title
+carried several colored tags, **the last tag in the title string won the
+whole row**. Now every tag token in the title renders as its own small
+colored pill (`.task-item__tag`, `public/render.js:1095`), each pulling its
+own foreground/background via `readTagColors` (unchanged) rather than one tag
+winning for the whole row. The row itself is no longer colored at all. This
+**retires** the "last colored tag wins" rule outright: `resolveTagColor` has
+no caller left anywhere in the app (confirmed — `render.js:81` notes the
+import is gone specifically because nothing calls it any longer), and it was
+deliberately **left in place rather than deleted**, the same treatment
+`FIREBASE.md`'s already-dead `colors` field and this file's own `inInbox`
+field got at step 14 / Inbox removal above — so a future reader finds it and
+knows it is intentionally vestigial, not an oversight. `product-spec.md` §4's
+"Visual Color Coding" requirement was rewritten to match (the "last tag in
+the title text forces the color" mechanics and the Hebrew
+furthest-to-the-left illustration are both gone, since there is no longer a
+single winner to disambiguate); the "same tag settings page that assigns
+matrix quadrants" part is unchanged, since nothing about *how* a color gets
+assigned to a tag changed, only *where* that color shows up. This is a
+**spec change**, not a deviation — a future review diffing against it should
+see no gap here.
+
+**A pre-existing checkbox bug was fixed in passing, not introduced by this
+work.** A global `input { width: 70% }` rule had no `.task-item__checkbox`
+override, so the row's own checkbox rendered **616px wide**, stretching
+across the row and shoving the title off to the far right. It is now
+constrained via `input[type="checkbox"] { width: auto; padding: 0 }` plus a
+dedicated `.task-item__checkbox` rule. The same global rule was also hitting
+the "Show completed" toggle and the due-date input, so both are fixed by the
+same change. This bug predates all of the above — it was found while
+restyling the row, not caused by the restyle.
